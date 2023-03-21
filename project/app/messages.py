@@ -1,0 +1,193 @@
+INCENTIVE="ハーゲンダッツ"
+#TODO: 営業案件をいくつか定義して、スプレッドシートで使う営業案件を決めるようにする。
+CASE = "~~~"
+
+
+def start_message_block(customer_id, sales_id):
+    return [
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": (
+                    f"プレイヤーの皆さん、こんにちは！これから「（仮）投資ゲーム」が始まります！\n"
+                    "このゲームは、客役が架空の営業案件を宣伝する営業役との対話を通じて、営業役が詐欺師かどうかをジャッジするゲームです。\n\n"
+                    "ゲームの流れと、報酬については以下の通りです。"
+                )
+            },
+        },
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": (
+                    "*ゲームの流れ*\n"
+                    "1. 役職の割当。\n"
+                    f"\ta. 客役: <@{customer_id}>、営業役: <@{sales_id}>\n"
+                    f"2. <@{sales_id}>に、今回の営業案件と詐欺師かどうかを通知。\n"
+                    f"\ta. このメッセージの後に<@{sales_id}>に見えるようにして送ります。"
+                    "3. 対話開始。"
+                    "*怪しい発話・嘘の発話の記録*"
+                    "もお願いします* \n"
+                    "\ta. 記録するもの \n"
+                    "\t\t• 客役: 営業役の発話で怪しいと思った発話。\n"
+                    "\t\t• 営業役: 自身の嘘の発話。\n"
+                    "\tb. おすすめの記録方法: <https://slack.zendesk.com/hc/article_attachments/1500012103001/save_files.png|ブックマークマークを押して、その発話をSave Itemに追加。>\n"
+                    "4. 対話終了後、客役は営業役が詐欺師かどうかを対話を通じて判断。\n"
+                    "\ta. 詐欺師だと思ったら `/lie` コマンド、詐欺師ではないと思ったら `/trust` コマンドをメッセージに送信。 \n"
+                    "5. 送信するGoogleスプレッドシートにアノテーション。\n"
+                    "\ta. 客役；記録しておいた営業役の怪しい発話の `suspicious` カラムにチェック。\n"
+                    "\tb. 営業役：記録しておいた自身が嘘をついた発話の `lie` カラムにチェック。\n"
+                    "6. 最後に入力が完了したらそれぞれ、 `/done` コマンドを送信してください。\n\n"
+                )
+            },
+        },
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": (
+                    "*報酬*\n"
+                    f"• このゲームの報酬は、{INCENTIVE}です。\n"
+                    f"• アノテーション終了後に結果を発表します。\n"
+                    
+                    f"獲得条件:\n"
+                    f"• 客役：客役は正しく詐欺師かそうでないかを正しく見抜けた時。\n"
+                    f"• 営業役：客役に信じてもらえた時。"
+                )
+            },
+        },
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": (
+                    "*注意事項*\n"
+                    f"• なにかご質問があれば、このチャンネルではなく、generalチャンネルでスタッフまでお声掛けください。 \n\n"
+                    
+                    f"それでは、ゲームを始めます！{INCENTIVE}獲得を目指して、楽しんでプレイしてください！"
+                )
+            },
+        },
+    ]
+
+
+def start_message_to_sales_block(is_liar):
+    LIAR_MESSAGE = "あなたは詐欺師です。相手に案件が怪しまれないように、うまく話を進め、信頼を得てください。"
+    HONEST_MESSAGE = "あなたは詐欺師ではありません。相手に案件が怪しまれないように、うまく話を進め、信頼を得てください。"
+    
+    return [
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": (
+                    "**営業案件と詐欺師かどうか** \n"
+                    f"{LIAR_MESSAGE if is_liar else HONEST_MESSAGE} \n"
+                    f"営業案件： \n"
+                    f"```{CASE}``` \n"
+                )
+            }
+        }
+    ]
+
+
+def judge_receipt_message(user_id):
+    return f"<@{user_id}> ジャッジを受け付けました。ありがとうございます。\n スプレッドシートを作成しますので少々お待ち下さい。"
+
+
+def ask_annotation_block(customer_id, sales_id, worksheet_url):
+    return [
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": (
+
+                    
+                    "スプレッドシートにアノテーションをお願いします。 \n"\
+                    "*アノテーション先*\n"
+                    f"• <@{customer_id}>: `suspicious` カラム\n"
+                    f"• <@{sales_id}>: `lie` カラム\n\n"\
+                    "両者のアノテーションが完了したら、ゲーム結果をお伝えします。"\
+                )
+            },
+            "accessory": {
+                "type": "button",
+                "text": {
+                    "type": "plain_text",
+                    "text": "スプレッドシートを開く",
+                    "emoji": True
+                },
+                "url": worksheet_url,
+                "action_id": "open_spreadsheet"
+            }
+        },
+    ]
+
+
+def on_open_spreadsheet_block(user_id):
+    return [
+                {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": (
+
+                    f"""
+                    <@{user_id}>アノテーション完了後、 `アノテーション完了` ボタンを押してください。 \
+                    """
+                )
+            },
+        },
+        {
+            "type": "actions",
+            "elements": [
+                {
+                    "type": "button",
+                    "text": {
+                        "type": "plain_text",
+                        "text": "アノテーション完了",
+                        "emoji": True
+                    },
+                    "action_id": "annotation_done",
+                    "style": "primary",
+                }
+            ]
+        }
+    ]
+
+
+
+def thank_you_for_annotation_message(user_id):
+    return f"<@{user_id}>アノテーション完了です。お疲れさまでした。"
+
+
+def command_confirmation_message(body):
+    return f"<@{body['user_id']}> `{body['command']}` を受け付けました。少々お待ち下さい。"
+
+
+def final_result_announcement_block(customer_id, sales_id, is_liar, judge):
+    if is_liar:
+        if judge=='lie':
+            RESULT_MESSAGE = f"<@{customer_id}>が{INCENTIVE}を獲得しました。\n<@{sales_id}>を正しく詐欺師と判断しました。おめでとうございます！"
+        elif judge=='trust':
+            RESULT_MESSAGE = f"<@{sales_id}>が{INCENTIVE}を獲得しました。 \n<@{customer_id}>をうまく欺くことに成功しました。おめでとうございます！"
+    else:
+        if judge=='lie':
+            RESULT_MESSAGE = f"今回{INCENTIVE}は両者ともお預けです。 \n<@{sales_id}>は詐欺師と怪しまれ、<@{customer_id}>は詐欺師ではないのに詐欺師と判定しました。残念。"
+        elif judge=='trust':
+            RESULT_MESSAGE = f"<@{customer_id}>と<@{sales_id}>が{INCENTIVE}を獲得しました。\n<@{customer_id}>は正しく詐欺師ではないこと判断し、<@{sales_id}>は相手に信じてもらうことができました。おめでとうございます！"
+    
+    return [
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": (
+                    f"*結果発表!*\n"
+                    f"{RESULT_MESSAGE}"
+                )
+            }
+        }
+    ]
