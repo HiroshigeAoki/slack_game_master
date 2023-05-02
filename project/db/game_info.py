@@ -22,9 +22,11 @@ class GameInfoTable(Base):
     sales_id = Column(String(255))
     is_liar = Column(Boolean)
     master_row_index = Column(Integer)
+    case_id = Column(Integer)
     is_started = Column(Boolean, default=False)
     worksheet_url = Column(String(255), default="")
     judge = Column(String(255), default="")
+    reason = Column(String(255), default="")
     customer_done = Column(Boolean, default=False)
     sales_done = Column(Boolean, default=False)
 

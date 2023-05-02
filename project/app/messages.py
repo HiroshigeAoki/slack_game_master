@@ -1,6 +1,7 @@
+from app.utils import load_case
+
 INCENTIVE="ハーゲンダッツ"
 #TODO: 営業案件をいくつか定義して、スプレッドシートで使う営業案件を決めるようにする。
-CASE = "~~~"
 
 
 def start_message_block(customer_id, sales_id):
@@ -24,7 +25,7 @@ def start_message_block(customer_id, sales_id):
                     "*ゲームの流れ*\n"
                     "1. 役職の割当。\n"
                     f"\t• 客役: <@{customer_id}>、営業役: <@{sales_id}>\n"
-                    f"2. <@{sales_id}>に、今回の営業案件と詐欺師かどうかを通知。\n"
+                    f"2. <@{sales_id}>に、営業案件と詐欺師かどうかを通知。\n"
                     f"\t• このメッセージの後に<@{sales_id}>に見えるようにして送ります。\n"
                     "3. 対話開始。\n"
                     "\t• 怪しい発話・嘘の発話の記録もお願いします \n"
@@ -35,6 +36,7 @@ def start_message_block(customer_id, sales_id):
                     "4. 対話終了後、客役は営業役が詐欺師かどうかを対話を通じて判断。\n"
                     "\t• 詐欺師だと思ったら `/lie` コマンド。"
                     "\t• 詐欺師ではないと思ったら `/trust` コマンド。 \n"
+                    "\t• 判断の根拠の入力もお願いします。\n"
                     "5. Googleスプレッドシートにアノテーション。\n"
                     "\t• 客役：記録しておいた営業役の怪しい発話の `suspicious` カラムにチェック。\n"
                     "\t• 営業役：記録しておいた自身が嘘をついた発話の `lie` カラムにチェック。\n"
@@ -72,9 +74,10 @@ def start_message_block(customer_id, sales_id):
     ]
 
 
-def start_message_to_sales_block(is_liar):
+def start_message_to_sales_block(case_id, is_liar):
     LIAR_MESSAGE = "あなたは詐欺師です。相手に案件が怪しまれないように、うまく話を進め、信頼を得てください。"
     HONEST_MESSAGE = "あなたは詐欺師ではありません。相手に怪しまれないように、うまく話を進め、信頼を得てください。"
+    CASE = load_case(case_id, is_liar)    
     
     return [
         {
@@ -103,8 +106,6 @@ def ask_annotation_block(customer_id, sales_id, worksheet_url):
             "text": {
                 "type": "mrkdwn",
                 "text": (
-
-                    
                     "スプレッドシートにアノテーションをお願いします。 \n"\
                     "*アノテーション先*\n"
                     f"• <@{customer_id}>: `suspicious` カラム\n"
@@ -156,7 +157,6 @@ def on_open_spreadsheet_block(user_id):
             ]
         }
     ]
-
 
 
 def thank_you_for_annotation_message(user_id):
