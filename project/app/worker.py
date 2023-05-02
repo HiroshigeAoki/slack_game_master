@@ -12,9 +12,6 @@ from gspread_dataframe import set_with_dataframe
 from gspread_formatting import DataValidationRule, BooleanCondition, set_data_validation_for_cell_range
 from gspread.exceptions import GSpreadException, APIError
 from oauth2client.service_account import ServiceAccountCredentials
-from google.oauth2 import service_account
-from googleapiclient.discovery import build
-from googleapiclient.errors import HttpError
 
 from app.utils import check_email_domain, unix_to_jst, str_to_bool
 from app.messages import start_message_block, start_message_to_sales_block, judge_receipt_message, ask_annotation_block, command_confirmation_message, thank_you_for_annotation_message, on_open_spreadsheet_block, final_result_announcement_block
@@ -36,8 +33,8 @@ google_client = gspread.authorize(creds)
 game_info_db = GameInfoDB().get_instance()
 
 MASTER_JUDGE_COL_INDEX = 5
-MASTER_FINISH_COL_INDEX = 6
-
+MASTER_REASON_COL_INDEX = 6
+MASTER_FINISH_COL_INDEX = 8
 
 with open('./staff_bot_id_email.json', 'r') as f:
     STAFF_BOT_ID_EMAIL = json.load(f)
@@ -230,6 +227,7 @@ def invite_players_task(body):
         sales_email = master_data.get("sales_email")
         customer_id = get_user_id_by_email(customer_email)
         sales_id = get_user_id_by_email(sales_email)
+        case_id = master_data.get("case_id")
         
         workplace_members = get_worckspace_members()
         logger.debug(f"Members in this workspace: {workplace_members}")
@@ -245,6 +243,7 @@ def invite_players_task(body):
             sales_email=sales_email,
             customer_id=customer_id,
             sales_id=sales_id,
+            case_id = case_id,
             is_liar=str_to_bool(master_data.get("is_liar")),
             master_row_index=int(master_row_index),
             is_started=False,
@@ -310,7 +309,7 @@ def start_task(body):
         # ルール説明+案件と詐欺師かどうかを通知するメッセージを送信
         post_message(channel_id=channel_id, blocks=start_message_block(customer_id, sales_id))
         time.sleep(1)
-        post_message(channel_id=channel_id, blocks=start_message_to_sales_block(is_liar=is_liar), ephermal=True, user_id=game_info.sales_id)
+        post_message(channel_id=channel_id, blocks=start_message_to_sales_block(case_id=game_info.case_id, is_liar=is_liar), ephermal=True, user_id=game_info.sales_id)
     
     except AssertionError as e:
         message=str(e)
@@ -486,7 +485,7 @@ def save_result(game_info: GameInfoTable, df):
         log_error(message=message, channel_id=channel_id)
 
 
-def save_messages_task(body, invoked_user_id, judge):
+def save_messages_task(body, invoked_user_id, judge, reason):
     """
         客役が/lie or /trustでジャッジしたときに呼ばれ、Slackのメッセージ全て読みこんで、
         Googleスプレットシートに'{チャンネル名}_{lie or trust}'のワークシートを追加して保存。
@@ -496,6 +495,7 @@ def save_messages_task(body, invoked_user_id, judge):
         body: Slackのリクエストボディ
         invoked_user_id (str): コマンドを使ったユーザーのID
         judge (Judge): 客が勧誘役が詐欺師かどうか判断したもの. lie or trust.
+        reason: 客が勧誘役が詐欺師だと思った理由
     
     Return:
         url(str): 営業役の人に発話が嘘かどうか、アノテーションをしてもらうため、スプレットシートのURLを送る。
@@ -554,6 +554,7 @@ def save_messages_task(body, invoked_user_id, judge):
         game_info_db.set_worksheet_url(channel_id=channel_id, worksheet_url=worksheet_url)
         post_message(blocks=ask_annotation_block(customer_id, sales_id, worksheet_url), channel_id=channel_id)
         save_value_to_master_sheet(target_row_index=game_info.master_row_index, target_col_index=MASTER_JUDGE_COL_INDEX, value=judge)
+        save_value_to_master_sheet(target_row_index=game_info.master_row_index, target_col_index=MASTER_REASON_COL_INDEX, value=reason)
 
         return True
 
