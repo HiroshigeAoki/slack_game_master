@@ -29,22 +29,13 @@ def str_to_bool(value):
     return value.lower() == "true"
 
 
-def load_case(_id: str, is_liar: bool) -> str:  
+def load_case(_id: str) -> str:  
     try:
         with open("./app/case.json", 'r') as f:
             cases = json.load(f)
-        _type = "lie" if is_liar else "truth"
-        case = cases.get(str(_id)).get(_type)
+        case_url = cases.get(str(_id))
         
-        case_str = ""
-        for name, content in case.items():
-            if isinstance(content, dict):
-                case_str += f'• {name}: \n'
-                for name, content in content.items():
-                    case_str += f' - {name}: {content}\n'
-            else:
-                case_str += f'• {name}: {content}\n'
-        return case_str
+        return case_url
 
     except AttributeError as e:
         logger.debug(f"case_id: {_id}が存在しません。")
