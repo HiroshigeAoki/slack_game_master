@@ -2,6 +2,7 @@ import re
 import datetime
 import pytz
 import json
+import setting
 import logging
 
 logger = logging.getLogger(__name__)
@@ -29,9 +30,10 @@ def str_to_bool(value):
     return value.lower() == "true"
 
 
+# 投資案件のURLを取得
 def load_case(_id: str) -> str:  
     try:
-        with open("./app/case.json", 'r') as f:
+        with open(setting.CASE_FILE, 'r') as f:
             cases = json.load(f)
         case_url = cases.get(str(_id))
         

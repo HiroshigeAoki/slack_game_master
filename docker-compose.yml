@@ -3,12 +3,12 @@ version: '3.8'
 services:
 
   web:
-    build: ./project
+    build: .
     ports:
       - 8000:8000
     command: python main.py
     volumes:
-      - ./project:/usr/src/app
+      - .:/code
     environment:
       - MYSQL_HOST=${MYSQL_HOST}
       - MYSQL_USER=${MYSQL_USER}

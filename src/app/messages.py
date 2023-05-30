@@ -1,4 +1,4 @@
-from app.utils import load_case
+from src.app.utils import load_case
 
 INCENTIVE="ハーゲンダッツ"
 GENERAL_CNANNEL_ID = "C04LWLAE5SM"
