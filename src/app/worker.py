@@ -7,15 +7,15 @@ import pandas as pd
 from slack_sdk.errors import SlackApiError
 from slack_sdk import WebClient
 import gspread
-from gspread_formatting.dataframe import format_with_dataframe, BasicFormatter
 from gspread_dataframe import set_with_dataframe
 from gspread_formatting import DataValidationRule, BooleanCondition, set_data_validation_for_cell_range
+from gspread_formatting.dataframe import format_with_dataframe, BasicFormatter
 from gspread.exceptions import GSpreadException, APIError
 from oauth2client.service_account import ServiceAccountCredentials
 
-from app.utils import check_email_domain, unix_to_jst, str_to_bool
-from app.messages import start_message_block, start_message_to_sales_block, judge_receipt_message, ask_annotation_block, command_confirmation_message, thank_you_for_annotation_message, on_open_spreadsheet_block, final_result_announcement_block
-from db.game_info import GameInfoDB, GameInfoTable
+from src.app.utils import check_email_domain, unix_to_jst, str_to_bool
+from src.app.messages import start_message_block, start_message_to_sales_block, judge_receipt_message, ask_annotation_block, command_confirmation_message, thank_you_for_annotation_message, on_open_spreadsheet_block, final_result_announcement_block
+from src.db.game_info import GameInfoDB, GameInfoTable
 
 import setting
 
@@ -36,13 +36,15 @@ MASTER_JUDGE_COL_INDEX = 5
 MASTER_REASON_COL_INDEX = 6
 MASTER_FINISH_COL_INDEX = 8
 
-with open('./staff_bot_id_email.json', 'r') as f:
-    STAFF_BOT_ID_EMAIL = json.load(f)
+
+with open(setting.STAFF_BOT_INFO_FILE_PATH, 'r') as f:
+    STAFF_BOT_INFO = json.load(f)
+    print(f"STAFF_BOT_INFO: {STAFF_BOT_INFO}")
     STAFF_BOT_IDS, STAFF_BOT_EMALS = [], []
-    for _id, email in STAFF_BOT_ID_EMAIL.values():
+    for _id, email in STAFF_BOT_INFO.values():
         STAFF_BOT_IDS.append(_id)
         STAFF_BOT_EMALS.append(email)
-    STAFF_BOT_ID_GMAIL = check_email_domain(STAFF_BOT_EMALS)
+    STAFF_BOT_ID_GMAILS = check_email_domain(STAFF_BOT_EMALS)
 
 
 def log_error(message, channel_id=None, body=None, post_to_cor_channel=False):
@@ -415,7 +417,7 @@ def save_result(game_info: GameInfoTable, df):
         # 編集権限を付与
         spreadsheet = google_client.open_by_key(os.environ['SPREAD_SHEET_KEY'])
         
-        for email in STAFF_BOT_ID_GMAIL + [customer_email, sales_email]:
+        for email in STAFF_BOT_ID_GMAILS + [customer_email, sales_email]:
             share_spreadsheet(spreadsheet=spreadsheet, email=email)
         
         # 既に同じ名前のworksheetが存在すれば、それを上書きする。
@@ -454,11 +456,11 @@ def save_result(game_info: GameInfoTable, df):
         
         worksheet.add_protected_range(
             lie_col_range,
-            editor_users_emails=STAFF_BOT_ID_GMAIL + [sales_email],
+            editor_users_emails=STAFF_BOT_ID_GMAILS + [sales_email],
         )
         worksheet.add_protected_range(
             suspicious_col_range,
-            editor_users_emails=STAFF_BOT_ID_GMAIL + [customer_email]
+            editor_users_emails=STAFF_BOT_ID_GMAILS + [customer_email]
         )
         worksheet.add_protected_range(
             other_cols_range,
