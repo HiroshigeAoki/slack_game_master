@@ -1,3 +1,4 @@
+import json
 from src.app.utils import load_case
 
 INCENTIVE="ハーゲンダッツ"
@@ -135,6 +136,52 @@ def ask_annotation_block(customer_id, sales_id, worksheet_url):
             }
         },
     ]
+
+
+def ask_reason_block(channel_id, judge):
+    judge_text = "詐欺師" if judge == "lie" else "詐欺師ではない"
+    return {
+        "title": {
+            "type": "plain_text",
+            "text": "判定の根拠を教えて下さい"
+        },
+        "submit": {
+            "type": "plain_text",
+            "text": "Submit"
+        },
+        "type": "modal",
+        "callback_id": "message_submission",
+        "private_metadata": json.dumps({
+            "judge": judge,
+            "channel_id": f"{channel_id}" 
+        }),
+        "blocks": [
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f"*Selected:* {judge_text}"  # Show the selected judge value
+                }
+            },
+            {
+                "type": "input",
+                "block_id": "message_input_block",
+                "label": {
+                    "type": "plain_text",
+                    "text": "判定の根拠"
+                },
+                "element": {
+                    "type": "plain_text_input",
+                    "action_id": "message",
+                    "min_length": 10,
+                    "placeholder": {
+                        "type": "plain_text",
+                        "text": "10単語以上入力してください"
+                    }
+                }
+            }
+        ]
+    }
 
 
 def on_open_spreadsheet_block(user_id):
