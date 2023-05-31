@@ -8,7 +8,7 @@ from slack_sdk.errors import SlackApiError
 from slack_sdk import WebClient
 import gspread
 from gspread_dataframe import set_with_dataframe
-from gspread_formatting import DataValidationRule, BooleanCondition, set_data_validation_for_cell_range
+from gspread_formatting import DataValidationRule, BooleanCondition, set_data_validation_for_cell_range, set_column_width, format_cell_range, batch_updater, cellFormat
 from gspread_formatting.dataframe import format_with_dataframe, BasicFormatter
 from gspread.exceptions import GSpreadException, APIError
 from oauth2client.service_account import ServiceAccountCredentials
@@ -58,7 +58,7 @@ def log_error(message, channel_id=None, body=None, post_to_cor_channel=False):
         message += f"<#{channel_id}>"   
     if body:
         message += f", <@{body['user_id']}>, `{body['command']}` "
-    post_message(channel_id=os.environ['ERROR_CHANNEL'], message=message)
+    post_message(channel_id=os.environ['ERROR_CHANNEL'], message=str(message))
 
 
 """Send message"""
@@ -140,13 +140,14 @@ def get_channel_members(channel_id):
     except SlackApiError as e:
         message=f"Error fetching members in <#{channel_id}>: {e}"
         log_error(message)
-    
 
-def get_channel_list():
+
+def get_channel_id_list():
     try:
-        response = slack_client.conversations_list()
+        response = slack_client.conversations_list(types="public_channel,private_channel")
         channels = response['channels']
-        return channels
+        channel_id_list = list(map(lambda x: x.get("id"), channels))
+        return channel_id_list
 
     except SlackApiError as e:
         message=f"Error fetching channels in this workspace: {e}"
@@ -219,9 +220,9 @@ def invite_players_task(body):
         
         logger.debug(f"channel_id: {channel_id}")
         
-        channel_list = get_channel_list()
-        logger.debug(f"Channels in this workspace: {channel_list}")
-        assert channel_id not in channel_list, f"チャンネル<#{channel_id}>が存在しません。"
+        channel_id_list = get_channel_id_list()
+        logger.debug(f"Channel ids in this workspace: {channel_id_list}")
+        assert channel_id in channel_id_list, f"チャンネル<#{channel_id}>が存在しません。存在するチャンネルのID: {channel_id_list}"
         post_message(message=command_confirmation_message(body=body), channel_id=channel_id, user_id=body['user_id'], ephermal=True)
         
         master_data, master_row_index = get_master_data(body, return_row_index=True)
@@ -437,6 +438,14 @@ def save_result(game_info: GameInfoTable, df):
             freeze_headers=True,
         )
         format_with_dataframe(worksheet, df, header_formatter)
+        
+        with batch_updater(worksheet.spreadsheet) as batch:
+            message_column_formatting = cellFormat(
+                horizontalAlignment="LEFT",
+                wrapStrategy="WRAP"
+            )
+            batch.set_column_width(worksheet, 'D:D', 1000)
+            batch.format_cell_range(worksheet, 'D:D', message_column_formatting)
         
         # lieカラムのTrue, Falseをチェックボックに
         validation_rule = DataValidationRule(
