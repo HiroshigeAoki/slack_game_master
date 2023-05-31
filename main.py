@@ -9,8 +9,8 @@ from slack_sdk.errors import SlackApiError
 import setting
 from src.app.worker import save_messages_task, invite_players_task, start_task, on_open_spreadsheet_task, on_annotation_done_task
 
-os.makedirs("logs", exist_ok=True)
-logging.basicConfig(filename='./logs/app.log', level=logging.DEBUG, format='%(asctime)s %(levelname)s: %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+os.makedirs(setting.LOG_DIR, exist_ok=True)
+logging.basicConfig(filename='./src/logs/app.log', level=logging.DEBUG, format='%(asctime)s %(levelname)s: %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
 logging.Formatter.converter = lambda *args: datetime.now(tz=timezone(timedelta(hours=+9), 'JST')).timetuple()
 
 logger = logging.getLogger(__name__)

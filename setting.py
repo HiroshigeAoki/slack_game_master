@@ -24,5 +24,6 @@ MYSQL_PASSWORD = os.environ["MYSQL_PASSWORD"]
 MYSQL_HOST = os.environ["MYSQL_HOST"]
 
 # Work space and Game info
+LOG_DIR = os.environ["LOG_DIR"]
 STAFF_BOT_INFO_FILE_PATH=os.environ["STAFF_BOT_INFO_FILE_PATH"]
 CASE_FILE = os.environ["CASE_FILE"]
