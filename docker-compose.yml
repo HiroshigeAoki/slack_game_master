@@ -16,6 +16,7 @@ services:
       - MYSQL_DATABASE=${MYSQL_DATABASE}
     depends_on:
       - db
+      - redis
     env_file:
       - .env
     secrets:
@@ -38,6 +39,26 @@ services:
       - mysql-data:/var/lib/mysql
     ports:
       - "3306:3306"
+
+  worker:
+    build: .
+    command: celery --app=src.app.worker.celery worker --loglevel=info --logfile=${LOG_DIR}/celery.log
+    volumes:
+      - .:/usr/src/app
+    depends_on:
+      - web
+      - redis
+    env_file:
+      - .env
+    secrets:
+      - slack_app_token
+      - slack_bot_token
+      - slack_signing_secret
+      - gcp_service_account_key
+      - staff_bot_info
+
+  redis:
+    image: redis:6-alpine
   
 secrets:
   slack_app_token:

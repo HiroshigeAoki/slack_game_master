@@ -11,7 +11,7 @@ import setting
 from src.app.worker import save_messages_task, invite_players_task, start_task, on_open_spreadsheet_task, on_annotation_done_task
 
 os.makedirs(setting.LOG_DIR, exist_ok=True)
-logging.basicConfig(filename='./src/logs/app.log', level=logging.DEBUG, format='%(asctime)s %(levelname)s: %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+logging.basicConfig(filename=f'{setting.LOG_DIR}/app.log', level=logging.DEBUG, format='%(asctime)s %(levelname)s: %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
 logging.Formatter.converter = lambda *args: datetime.now(tz=timezone(timedelta(hours=+9), 'JST')).timetuple()
 
 logger = logging.getLogger(__name__)
@@ -51,7 +51,7 @@ async def open_ask_reason_modal(client, trigger_id, channel_id, judge):
 async def save_messages(body, judge, reason):
     logger.debug(f"/{judge}, reason: {reason}, body: {body}")
     invoked_user_id = body.get("user_id")
-    save_messages_task(body, invoked_user_id, judge, reason)
+    save_messages_task.delay(body, invoked_user_id, judge, reason)
 
 
 @app.command("/lie")

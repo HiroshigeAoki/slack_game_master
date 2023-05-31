@@ -2,7 +2,7 @@ import os
 import time
 import logging
 import traceback
-import json
+from celery import Celery
 import pandas as pd
 from slack_sdk.errors import SlackApiError
 from slack_sdk import WebClient
@@ -29,6 +29,10 @@ scope = ['https://spreadsheets.google.com/feeds',
 
 creds = ServiceAccountCredentials.from_json_keyfile_name(setting.GCP_SERVICE_ACCOUNT_KEY, scope)
 google_client = gspread.authorize(creds)
+
+celery = Celery(__name__)
+celery.conf.broker_url = os.environ.get("CELERY_BROKER_URL", "redis://localhost:6379")
+celery.conf.result_backend = os.environ.get("CELERY_RESULT_BACKEND", "redis://localhost:6379")
 
 game_info_db = GameInfoDB().get_instance()
 
@@ -486,6 +490,7 @@ def save_result(game_info: GameInfoTable, df):
         log_error(message=message, channel_id=channel_id)
 
 
+@celery.task(name="save_messages_task", time_limit=300)
 def save_messages_task(body, invoked_user_id, judge, reason):
     """
         客役が/lie or /trustでジャッジしたときに呼ばれ、Slackのメッセージ全て読みこんで、
