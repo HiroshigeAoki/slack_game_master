@@ -127,7 +127,7 @@ def ask_annotation_block(customer_id, sales_id, worksheet_url):
                 "type": "button",
                 "text": {
                     "type": "plain_text",
-                    "text": "スプレッドシートを開く",
+                    "text": ":googlespreadsheet: スプレッドシートを開く",
                     "emoji": True
                 },
                 "url": worksheet_url,
