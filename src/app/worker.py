@@ -13,7 +13,7 @@ from gspread_formatting.dataframe import format_with_dataframe, BasicFormatter
 from gspread.exceptions import GSpreadException, APIError
 from oauth2client.service_account import ServiceAccountCredentials
 
-from src.app.utils import check_email_domain, unix_to_jst, str_to_bool
+from src.app.utils import unix_to_jst, str_to_bool
 from src.app.messages import start_message_block, start_message_to_sales_block, judge_receipt_message, ask_annotation_block, command_confirmation_message, thank_you_for_annotation_message, on_open_spreadsheet_block, final_result_announcement_block
 from src.db.game_info import GameInfoDB, GameInfoTable
 
@@ -27,7 +27,7 @@ scope = ['https://spreadsheets.google.com/feeds',
         'https://www.googleapis.com/auth/drive',
         'https://www.googleapis.com/auth/drive.file']
 
-creds = ServiceAccountCredentials.from_json_keyfile_name(setting.PATH_TO_JSON_KEYFILE, scope)
+creds = ServiceAccountCredentials.from_json_keyfile_name(setting.GCP_SERVICE_ACCOUNT_KEY, scope)
 google_client = gspread.authorize(creds)
 
 game_info_db = GameInfoDB().get_instance()
@@ -35,16 +35,6 @@ game_info_db = GameInfoDB().get_instance()
 MASTER_JUDGE_COL_INDEX = 5
 MASTER_REASON_COL_INDEX = 6
 MASTER_FINISH_COL_INDEX = 8
-
-
-with open(setting.STAFF_BOT_INFO_FILE_PATH, 'r') as f:
-    STAFF_BOT_INFO = json.load(f)
-    print(f"STAFF_BOT_INFO: {STAFF_BOT_INFO}")
-    STAFF_BOT_IDS, STAFF_BOT_EMALS = [], []
-    for _id, email in STAFF_BOT_INFO.values():
-        STAFF_BOT_IDS.append(_id)
-        STAFF_BOT_EMALS.append(email)
-    STAFF_BOT_ID_GMAILS = check_email_domain(STAFF_BOT_EMALS)
 
 
 def log_error(message, channel_id=None, body=None, post_to_cor_channel=False):
@@ -214,7 +204,7 @@ def save_value_to_master_sheet(target_row_index, target_col_index, value):
 """`/invite_players` command"""
 def invite_players_task(body):
     try:
-        assert body.get("user_id") in STAFF_BOT_IDS, "スタッフ以外はこのコマンドを使用できません。"
+        assert body.get("user_id") in setting.STAFF_BOT_IDS, "スタッフ以外はこのコマンドを使用できません。"
         
         channel_id = body.get("channel_id")
         
@@ -292,7 +282,7 @@ def invite_players_task(body):
 """`/start` command"""
 def start_task(body):
     try:
-        assert body.get("user_id") in STAFF_BOT_IDS, "スタッフ以外はこのコマンドを使用できません。"
+        assert body.get("user_id") in setting.STAFF_BOT_IDS, "スタッフ以外はこのコマンドを使用できません。"
         
         channel_id = body.get("channel_id")
         post_message(message=command_confirmation_message(body=body), channel_id=channel_id, user_id=body['user_id'], ephermal=True)
@@ -418,7 +408,7 @@ def save_result(game_info: GameInfoTable, df):
         # 編集権限を付与
         spreadsheet = google_client.open_by_key(os.environ['SPREAD_SHEET_KEY'])
         
-        for email in STAFF_BOT_ID_GMAILS + [customer_email, sales_email]:
+        for email in setting.STAFF_BOT_ID_GMAILS + [customer_email, sales_email]:
             share_spreadsheet(spreadsheet=spreadsheet, email=email)
         
         # 既に同じ名前のworksheetが存在すれば、それを上書きする。
@@ -465,19 +455,19 @@ def save_result(game_info: GameInfoTable, df):
         
         worksheet.add_protected_range(
             lie_col_range,
-            editor_users_emails=STAFF_BOT_ID_GMAILS + [sales_email],
+            editor_users_emails=setting.STAFF_BOT_ID_GMAILS + [sales_email],
         )
         worksheet.add_protected_range(
             suspicious_col_range,
-            editor_users_emails=STAFF_BOT_ID_GMAILS + [customer_email]
+            editor_users_emails=setting.STAFF_BOT_ID_GMAILS + [customer_email]
         )
         worksheet.add_protected_range(
             other_cols_range,
-            editor_users_emails=STAFF_BOT_EMALS
+            editor_users_emails=setting.STAFF_BOT_EMALS
         )
         worksheet.add_protected_range(
             header_range,
-            editor_users_emails=STAFF_BOT_EMALS
+            editor_users_emails=setting.STAFF_BOT_EMALS
         )
         
         # add_validation_rules(spreadsheet_id=spreadsheet.id, sheet_id=worksheet.id)
@@ -514,7 +504,7 @@ def save_messages_task(body, invoked_user_id, judge, reason):
     """
     
     try:
-        assert invoked_user_id not in STAFF_BOT_IDS, f"スタッフは/lie|/trustコマンドを使わないでください。"
+        assert invoked_user_id not in setting.STAFF_BOT_IDS, f"スタッフは/lie|/trustコマンドを使わないでください。"
         logger.debug(f"save_messages_task invoked. body: {body}, invoked_user_id: {invoked_user_id}, judge: {judge}")
         
         channel_id = body['channel_id']
@@ -589,7 +579,7 @@ def on_open_spreadsheet_task(body):
         channel_id = body['container']['channel_id']
         invoked_user_id = body['user']['id']
         
-        if invoked_user_id in STAFF_BOT_IDS:
+        if invoked_user_id in setting.STAFF_BOT_IDS:
             return
         post_message(blocks=on_open_spreadsheet_block(user_id=invoked_user_id), channel_id=channel_id, user_id=invoked_user_id, ephermal=True)
 
@@ -601,7 +591,7 @@ def on_annotation_done_task(body):
     try:
         channel_id = body['container']['channel_id']
         invoked_user_id = body['user']['id']
-        assert invoked_user_id not in STAFF_BOT_IDS, "スタッフは `アノテーション完了ボタン` を押さないでください。"
+        assert invoked_user_id not in setting.STAFF_BOT_IDS, "スタッフは `アノテーション完了ボタン` を押さないでください。"
         
         game_info = game_info_db.get_game_info(channel_id)
         customer_id = game_info.customer_id

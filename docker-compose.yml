@@ -18,6 +18,12 @@ services:
       - db
     env_file:
       - .env
+    secrets:
+      - slack_app_token
+      - slack_bot_token
+      - slack_signing_secret
+      - gcp_service_account_key
+      - staff_bot_info
 
   db:
     image: mysql:8.0
@@ -32,6 +38,18 @@ services:
       - mysql-data:/var/lib/mysql
     ports:
       - "3306:3306"
+  
+secrets:
+  slack_app_token:
+    file: ./secrets/slack_app_token.txt
+  slack_bot_token:
+    file: ./secrets/slack_bot_token.txt
+  slack_signing_secret:
+    file: ./secrets/slack_signing_secret.txt
+  gcp_service_account_key:
+    file: ./secrets/save-slack-gsheet-e7e41bdd1d33.json
+  staff_bot_info:
+    file: ./secrets/staff_bot_info.json
 
 volumes:
   mysql-data:
