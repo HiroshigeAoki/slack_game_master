@@ -8,7 +8,7 @@ from slack_sdk.errors import SlackApiError
 from slack_sdk import WebClient
 import gspread
 from gspread_dataframe import set_with_dataframe
-from gspread_formatting import DataValidationRule, BooleanCondition, set_data_validation_for_cell_range, set_column_width, format_cell_range, batch_updater, cellFormat
+from gspread_formatting import DataValidationRule, BooleanCondition, set_data_validation_for_cell_range, batch_updater, cellFormat
 from gspread_formatting.dataframe import format_with_dataframe, BasicFormatter
 from gspread.exceptions import GSpreadException, APIError
 from oauth2client.service_account import ServiceAccountCredentials
@@ -112,7 +112,7 @@ def get_displayed_name(user_id):
     except SlackApiError as e:
         message=f"Error fetching user info(<@{user_id}>): {e}"
         log_error(message)
-        
+
 
 def get_worckspace_members():
     try:
@@ -284,6 +284,7 @@ def invite_players_task(body):
 
 
 """`/start` command"""
+@celery.task(name="start_task", time_limit=300)
 def start_task(body):
     try:
         assert body.get("user_id") in setting.STAFF_BOT_IDS, "スタッフ以外はこのコマンドを使用できません。"
@@ -446,12 +447,13 @@ def save_result(game_info: GameInfoTable, df):
             BooleanCondition('BOOLEAN', ['TRUE', 'FALSE']),
             showCustomUi=True
         )
-        lie_col_range = f'E2:E{len(df.index) + 1}'
+        
+        # lie/suspiciousカラムに編集制限をかける
+        if game_info.is_liar: # 詐欺師の場合のみ嘘の発話をアノテーション出来る
+            lie_col_range = f'E2:E{len(df.index) + 1}'
+            set_data_validation_for_cell_range(worksheet, lie_col_range, validation_rule)   
         suspicious_col_range = f'F2:F{len(df.index) + 1}'
-        set_data_validation_for_cell_range(worksheet, lie_col_range, validation_rule)
         set_data_validation_for_cell_range(worksheet, suspicious_col_range, validation_rule)
-
-        # TODO: セルの横幅を変える。
         
         # 編集制限
         other_cols_range = f"A1:D{len(df.index) + 1}"
@@ -558,7 +560,11 @@ def save_messages_task(body, invoked_user_id, judge, reason):
         worksheet_url = save_result(game_info, df)
         logger.debug(f"worksheet_url: {worksheet_url}")
         game_info_db.set_worksheet_url(channel_id=channel_id, worksheet_url=worksheet_url)
-        post_message(blocks=ask_annotation_block(customer_id, sales_id, worksheet_url), channel_id=channel_id)
+
+        post_message(blocks=ask_annotation_block(worksheet_url, role="customer"), channel_id=setting.COR_CHANNEL_ID, ephermal=True, user_id=customer_id)
+        if game_info.is_liar: # アノテーションは、詐欺師でない場合のみ
+            post_message(blocks=ask_annotation_block(worksheet_url, role="sales"), channel_id=setting.COR_CHANNEL_ID, ephermal=True, user_id=sales_id)
+
         save_value_to_master_sheet(target_row_index=game_info.master_row_index, target_col_index=MASTER_JUDGE_COL_INDEX, value=judge)
         save_value_to_master_sheet(target_row_index=game_info.master_row_index, target_col_index=MASTER_REASON_COL_INDEX, value=reason)
 
@@ -604,6 +610,10 @@ def on_annotation_done_task(body):
         
         assert game_info.judge is not None, f"客役の<@{customer_id}>がまだ `/lie` | `/trust` コマンドを入力していないため、ゲームが終わっていません。\n `/done` コマンドはゲーム終了後に使用してください 。"
         
+        # 営業役が詐欺師でない場合、アノテーションを要求しない。
+        if not game_info.is_liar:
+            game_info_db.set_customer_done(channel_id)
+        
         if invoked_user_id == customer_id:
             if game_info.customer_done:
                 return
@@ -614,8 +624,6 @@ def on_annotation_done_task(body):
                 return
             else:
                 game_info_db.set_sales_done(channel_id)
-        else:
-            raise AssertionError(f"ゲームに参加していないユーザーは`/done`コマンドを使わないでください。")
         
         logger.error(f"game_info: {game_info}")
         game_info = game_info_db.get_game_info(channel_id)
