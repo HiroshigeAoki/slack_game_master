@@ -46,7 +46,7 @@ def log_error(message, channel_id=None, body=None, post_to_cor_channel=False):
     logger.error(message)
 
     if channel_id and post_to_cor_channel:
-        post_message(channel_id=channel_id, message=message)
+        post_message(channel_id=channel_id, message=str(message))
 
     if channel_id:
         message += f"<#{channel_id}>"   
@@ -206,6 +206,7 @@ def save_value_to_master_sheet(target_row_index, target_col_index, value):
 
 
 """`/invite_players` command"""
+@celery.task(name="invite_players_task", time_limit=300)
 def invite_players_task(body):
     try:
         assert body.get("user_id") in setting.STAFF_BOT_IDS, "スタッフ以外はこのコマンドを使用できません。"
@@ -256,10 +257,8 @@ def invite_players_task(body):
         
         members = get_channel_members(channel_id)
         logger.debug(f"Members in <#{channel_id}>: {members}")
-        if customer_id in members:
-            raise SlackApiError(f"Customer(<@{customer_id}>) is already in the channel<#{channel_id}>.")
-        if sales_id in members:
-            raise SlackApiError(f"Sales(<@{sales_id}>) is already in the channel<#{channel_id}>.")
+        if customer_id in members and sales_id in members:
+            return
         
         response = slack_client.conversations_invite(channel=channel_id, users=f"{customer_id},{sales_id}")
         
@@ -448,25 +447,26 @@ def save_result(game_info: GameInfoTable, df):
             showCustomUi=True
         )
         
+        # 編集制限
         # lie/suspiciousカラムに編集制限をかける
         if game_info.is_liar: # 詐欺師の場合のみ嘘の発話をアノテーション出来る
             lie_col_range = f'E2:E{len(df.index) + 1}'
             set_data_validation_for_cell_range(worksheet, lie_col_range, validation_rule)   
+            worksheet.add_protected_range(
+                lie_col_range,
+                editor_users_emails=setting.STAFF_BOT_ID_GMAILS + [sales_email],
+            )
+            
         suspicious_col_range = f'F2:F{len(df.index) + 1}'
         set_data_validation_for_cell_range(worksheet, suspicious_col_range, validation_rule)
-        
-        # 編集制限
-        other_cols_range = f"A1:D{len(df.index) + 1}"
-        header_range = "A1:F1"
-        
-        worksheet.add_protected_range(
-            lie_col_range,
-            editor_users_emails=setting.STAFF_BOT_ID_GMAILS + [sales_email],
-        )
         worksheet.add_protected_range(
             suspicious_col_range,
             editor_users_emails=setting.STAFF_BOT_ID_GMAILS + [customer_email]
         )
+        
+        other_cols_range = f"A1:D{len(df.index) + 1}"
+        header_range = "A1:F1"
+        
         worksheet.add_protected_range(
             other_cols_range,
             editor_users_emails=setting.STAFF_BOT_EMALS
@@ -490,6 +490,9 @@ def save_result(game_info: GameInfoTable, df):
     except GSpreadException as e:
         message = f"Error saving messages: {e}"
         log_error(message=message, channel_id=channel_id)
+    
+    except Exception as e:
+        log_error(message=f"{e}", channel_id=channel_id)
 
 
 @celery.task(name="save_messages_task", time_limit=300)
@@ -561,9 +564,9 @@ def save_messages_task(body, invoked_user_id, judge, reason):
         logger.debug(f"worksheet_url: {worksheet_url}")
         game_info_db.set_worksheet_url(channel_id=channel_id, worksheet_url=worksheet_url)
 
-        post_message(blocks=ask_annotation_block(worksheet_url, role="customer"), channel_id=setting.COR_CHANNEL_ID, ephermal=True, user_id=customer_id)
-        if game_info.is_liar: # アノテーションは、詐欺師でない場合のみ
-            post_message(blocks=ask_annotation_block(worksheet_url, role="sales"), channel_id=setting.COR_CHANNEL_ID, ephermal=True, user_id=sales_id)
+        post_message(blocks=ask_annotation_block(worksheet_url, role="customer"), channel_id=game_info.channel_id, ephermal=True, user_id=customer_id)
+        if game_info.is_liar: # 営業訳のアノテーションは、詐欺師でない場合のみ
+            post_message(blocks=ask_annotation_block(worksheet_url, role="sales"), channel_id=game_info.channel_id, ephermal=True, user_id=sales_id)
 
         save_value_to_master_sheet(target_row_index=game_info.master_row_index, target_col_index=MASTER_JUDGE_COL_INDEX, value=judge)
         save_value_to_master_sheet(target_row_index=game_info.master_row_index, target_col_index=MASTER_REASON_COL_INDEX, value=reason)
@@ -575,8 +578,7 @@ def save_messages_task(body, invoked_user_id, judge, reason):
         log_error(message=message, channel_id=channel_id, body=body)
     
     except AssertionError as e:
-        message=str(e)
-        log_error(message=message, channel=channel_id, body=body, post_to_cor_channel=True)
+        log_error(message=str(e), channel=channel_id, body=body, post_to_cor_channel=True)
         
     except AttributeError as e:
         log_error(message=str(e), channel_id=channel_id, body=body)
@@ -596,7 +598,7 @@ def on_open_spreadsheet_task(body):
 
     except Exception as e:
         log_error(message=str(e), channel_id=channel_id)
-        
+
 
 def on_annotation_done_task(body):
     try:
@@ -609,10 +611,12 @@ def on_annotation_done_task(body):
         sales_id = game_info.sales_id
         
         assert game_info.judge is not None, f"客役の<@{customer_id}>がまだ `/lie` | `/trust` コマンドを入力していないため、ゲームが終わっていません。\n `/done` コマンドはゲーム終了後に使用してください 。"
+        logger.debug(f"game_info: {game_info}")
+        logger.debug(f"{game_info.is_liar}")
         
         # 営業役が詐欺師でない場合、アノテーションを要求しない。
         if not game_info.is_liar:
-            game_info_db.set_customer_done(channel_id)
+            game_info_db.set_sales_done(channel_id)
         
         if invoked_user_id == customer_id:
             if game_info.customer_done:
@@ -625,7 +629,7 @@ def on_annotation_done_task(body):
             else:
                 game_info_db.set_sales_done(channel_id)
         
-        logger.error(f"game_info: {game_info}")
+        logger.debug(f"customer_done: {game_info.customer_done}, sales_done: {game_info.sales_done}")
         game_info = game_info_db.get_game_info(channel_id)
         
         post_message(channel_id=channel_id, message=thank_you_for_annotation_message(invoked_user_id), user_id=invoked_user_id, ephermal=True)

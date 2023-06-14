@@ -27,7 +27,7 @@ async def handle_invite_command(ack, body):
     try:
         await ack()
         logger.debug(f"/invite_players, body: {body}")
-        invite_players_task(body)
+        invite_players_task.delay(body)
     except SlackApiError as e:
         raise e
 
@@ -90,7 +90,7 @@ async def handle_view_submission(ack, body, view):
 async def on_open_spreadsheet(body, ack):
     await ack()
     action_id = body.get("actions")[0].get("action_id")
-    logger.debug(f"block_actions, body: {body}, action_id: {action_id}")
+    logger.debug(f"on_open_spreadsheet_task, body: {body}, action_id: {action_id}")
     
     on_open_spreadsheet_task(body)
 
@@ -99,7 +99,7 @@ async def on_open_spreadsheet(body, ack):
 async def on_annotation_done(body, ack):
     await ack()
     action_id = body.get("actions")[0].get("action_id")
-    logger.debug(f"block_actions, body: {body}, action_id: {action_id}")
+    logger.debug(f"on_annotation_done_task, body: {body}, action_id: {action_id}")
     
     on_annotation_done_task(body)
 
