@@ -36,7 +36,7 @@ async def handle_invite_command(ack, body):
 async def handle_start_command(ack, body):
     try:
         await ack()
-        start_task(body)
+        start_task.delay(body)
     except SlackApiError as e:
         raise e
 
