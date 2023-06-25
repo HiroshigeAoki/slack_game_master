@@ -4,6 +4,7 @@ import traceback
 import setting
 import pandas as pd
 from celery import Celery
+from celery.utils.log import get_task_logger
 from slack_sdk.errors import SlackApiError
 from src.app.utils import unix_to_jst
 from src.app.messages import (start_message_block, role_instruction_block,
@@ -14,6 +15,7 @@ from src.db.game_info import GameInfoDB
 from src.app.slack import SlackClientWrapper
 from src.app.gsheet import GSheetClientWrapper
 from src.app.utils import unix_to_jst, str_to_bool
+from logger_config import setup_loggers
 
 slack_client = SlackClientWrapper()
 gsheet_client = GSheetClientWrapper()
@@ -22,10 +24,10 @@ celery = Celery(__name__)
 celery.conf.broker_url = os.environ.get("CELERY_BROKER_URL", "redis://localhost:6379")
 celery.conf.result_backend = os.environ.get("CELERY_RESULT_BACKEND", "redis://localhost:6379")
 
-game_info_db = GameInfoDB().get_instance()
+logger = get_task_logger(__name__)
+logger = setup_loggers(logger)
 
-logger = logging.getLogger('slack_game_master')
-logger.setLevel(logging.DEBUG)
+game_info_db = GameInfoDB().get_instance()
 
 MASTER_JUDGE_COL_INDEX = 5
 MASTER_REASON_COL_INDEX = 6
