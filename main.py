@@ -1,28 +1,13 @@
-import os
 import json
 import logging
-from datetime import datetime, timezone, timedelta
 from slack_sdk import WebClient
-from src.app.slack import SlackLoggingHandler
 from slack_bolt.async_app import AsyncApp
 from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
 from src.app.messages import ask_reason_block
 import setting
 from src.app.worker import save_messages_task, invite_players_task, start_task, on_open_spreadsheet_task, on_annotation_done_task
 from src.db.game_info import GameInfoDB
-
-logger = logging.getLogger('slack_game_master')
-logger.setLevel(logging.DEBUG)
-logging.Formatter.converter = lambda *args: datetime.now(tz=timezone(timedelta(hours=+9), 'JST')).timetuple()
-
-os.makedirs(setting.LOG_DIR, exist_ok=True)
-file_handler = logging.FileHandler(f'{setting.LOG_DIR}/app.log')
-file_handler.setFormatter(logging.Formatter('%(asctime)s %(levelname)-9s %(message)s'))
-logger.addHandler(file_handler)
-
-slack_handler = SlackLoggingHandler()
-slack_handler.setFormatter(logging.Formatter('%(message)s'))
-logger.addHandler(slack_handler)
+from logger_config import setup_loggers
 
 game_info_db = GameInfoDB().get_instance()
 
@@ -30,6 +15,9 @@ app = AsyncApp(
     token=setting.SLACK_BOT_TOKEN,
     signing_secret=setting.SLACK_SIGNING_SECRET,
 )
+    
+logger = logging.getLogger('slack_game_master')
+logger = setup_loggers(logger)
 
 
 # validation
