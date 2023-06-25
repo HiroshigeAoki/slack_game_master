@@ -10,7 +10,7 @@ def setup_loggers(logger):
 
     os.makedirs(setting.LOG_DIR, exist_ok=True)
     file_handler = logging.FileHandler(f'{setting.LOG_DIR}/app.log')
-    file_handler.setFormatter(logging.Formatter('%(asctime)s %(levelname)-9s [%(pathname)s - %(funcName)s - %(lineno)d] %(message)s'))
+    file_handler.setFormatter(logging.Formatter('%(asctime)s %(levelname)-9s [%(pathname)s:%(lineno)d - %(funcName)s] %(message)s'))
     logger.addHandler(file_handler)
 
     slack_handler = SlackLoggingHandler()
