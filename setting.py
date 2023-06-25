@@ -37,6 +37,11 @@ GCP_SERVICE_ACCOUNT_KEY = "/run/secrets/gcp_service_account_key"
 SPREAD_SHEET_KEY = os.environ["SPREAD_SHEET_KEY"]
 MASTER_SHEET_KEY = os.environ["MASTER_SHEET_KEY"]
 
+# Google Docs
+CUSTOMER_INSTRUCTION = "https://docs.google.com/document/d/1sA4yck9xEcwCx0snUvhq70KlieUF5t7iPC7RySRAnZk/edit?usp=sharing"
+SALES_LIAR_INSTRUCTION = "https://docs.google.com/document/d/1ZYkHfVElZZTl_4uIAwBI_XP-h8CR-zvtn9mX2QoMJTk/edit?usp=sharing"
+SALES_HONEST_INSTRUCTION = "https://docs.google.com/document/d/1x5BFuFaVFqXnujvpBQ6dITKulqMxnYeFJmGVe5yI_RQ/edit?usp=sharing"
+
 # MySQL
 MYSQL_ROOT_PASSWORD = os.environ["MYSQL_ROOT_PASSWORD"]
 MYSQL_DATABASE = os.environ["MYSQL_DATABASE"]
@@ -48,9 +53,11 @@ MYSQL_HOST = os.environ["MYSQL_HOST"]
 LOG_DIR = os.environ["LOG_DIR"]
 CASE_FILE = os.environ["CASE_FILE"]
 
-STAFF_BOT_INFO = load_secrets("staff_bot_info")
-STAFF_BOT_IDS, STAFF_BOT_EMALS = [], []
-for _id, email in STAFF_BOT_INFO.values():
-    STAFF_BOT_IDS.append(_id)
-    STAFF_BOT_EMALS.append(email)
+
+BOT_ID = os.environ["BOT_ID"]
+BOT_EMAIL = os.environ["BOT_EMAIL"]
+STAFF_ID = os.environ["STAFF_ID"]
+STAFF_EMAIL = os.environ["STAFF_EMAIL"]
+STAFF_BOT_IDS = [STAFF_ID, BOT_ID]
+STAFF_BOT_EMALS = [STAFF_EMAIL, BOT_EMAIL]
 STAFF_BOT_ID_GMAILS = check_email_domain(STAFF_BOT_EMALS)

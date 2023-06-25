@@ -24,7 +24,6 @@ services:
       - slack_bot_token
       - slack_signing_secret
       - gcp_service_account_key
-      - staff_bot_info
 
   db:
     image: mysql:8.0
@@ -55,7 +54,6 @@ services:
       - slack_bot_token
       - slack_signing_secret
       - gcp_service_account_key
-      - staff_bot_info
 
   redis:
     image: redis:6-alpine
@@ -69,8 +67,6 @@ secrets:
     file: ./secrets/slack_signing_secret.txt
   gcp_service_account_key:
     file: ./secrets/save-slack-gsheet-e7e41bdd1d33.json
-  staff_bot_info:
-    file: ./secrets/staff_bot_info.json
 
 volumes:
   mysql-data:

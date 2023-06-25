@@ -2,11 +2,7 @@ from sqlalchemy import create_engine, Column, String, Boolean, Integer
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, scoped_session
 import numpy as np
-import logging
-
 import setting
-
-logger = logging.getLogger(__name__)
 
 Base = declarative_base()
 

@@ -2,19 +2,29 @@ import os
 import json
 import logging
 from datetime import datetime, timezone, timedelta
+from slack_sdk import WebClient
+from src.app.slack import SlackLoggingHandler
 from slack_bolt.async_app import AsyncApp
 from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
-from slack_sdk.errors import SlackApiError
 from src.app.messages import ask_reason_block
-
 import setting
 from src.app.worker import save_messages_task, invite_players_task, start_task, on_open_spreadsheet_task, on_annotation_done_task
+from src.db.game_info import GameInfoDB
 
-os.makedirs(setting.LOG_DIR, exist_ok=True)
-logging.basicConfig(filename=f'{setting.LOG_DIR}/app.log', level=logging.DEBUG, format='%(asctime)s %(levelname)s: %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+logger = logging.getLogger('slack_game_master')
+logger.setLevel(logging.DEBUG)
 logging.Formatter.converter = lambda *args: datetime.now(tz=timezone(timedelta(hours=+9), 'JST')).timetuple()
 
-logger = logging.getLogger(__name__)
+os.makedirs(setting.LOG_DIR, exist_ok=True)
+file_handler = logging.FileHandler(f'{setting.LOG_DIR}/app.log')
+file_handler.setFormatter(logging.Formatter('%(asctime)s %(levelname)-9s %(message)s'))
+logger.addHandler(file_handler)
+
+slack_handler = SlackLoggingHandler()
+slack_handler.setFormatter(logging.Formatter('%(message)s'))
+logger.addHandler(slack_handler)
+
+game_info_db = GameInfoDB().get_instance()
 
 app = AsyncApp(
     token=setting.SLACK_BOT_TOKEN,
@@ -22,23 +32,56 @@ app = AsyncApp(
 )
 
 
+# validation
+async def validate_command_usage(body, client: WebClient):
+    channel_id = body.get("channel_id")
+    invoked_user_id = body.get("user_id")
+    command = body.get("command")
+    game_info = game_info_db.get_game_info(channel_id)
+    logger.debug(f"validate_command_usage, channel_id: {channel_id}, invoked_user_id: {invoked_user_id}, command: {command}, game_info: {game_info}")
+    
+    if command == "/invite_players" or command == "/start":
+        if invoked_user_id not in setting.STAFF_BOT_IDS:
+            await client.chat_postEphemeral(channel=channel_id, user=invoked_user_id, text="このコマンドは管理者のみが実行できます。")
+            return False
+    
+    if command == "/start":
+        if game_info == None:
+            await client.chat_postEphemeral(channel=channel_id, user=invoked_user_id, text="DBにゲーム情報が入っていません。DB初期化のため、 `/invite_users` コマンドを実行してください。")
+    
+    if command == "/lie" or command == "/trust":
+        if game_info == None:
+            await client.chat_postEphemeral(channel=channel_id, user=invoked_user_id, text="ゲームが開始されていません。")
+            return False        
+        elif game_info.customer_id != invoked_user_id:
+            await client.chat_postEphemeral(channel=channel_id, user=invoked_user_id, text=f"客役の<@{game_info.customer_id}>さん以外は/lie|/trustコマンドを使わないでください。")
+            return False
+        elif game_info.is_started == False:
+            await client.chat_postEphemeral(channel=channel_id, user=invoked_user_id, text="ゲームが開始されていません。")
+            return False
+    return True
+
+
 @app.command("/invite_players")
-async def handle_invite_command(ack, body):
+async def handle_invite_command(ack, body, client):
     try:
         await ack()
         logger.debug(f"/invite_players, body: {body}")
-        invite_players_task.delay(body)
-    except SlackApiError as e:
-        raise e
+        if await validate_command_usage(body=body, client=client):
+            invite_players_task.delay(body)
+    except Exception as e:
+        logger.error(f"Failed to invite players: {e}")
 
 
 @app.command("/start")
-async def handle_start_command(ack, body):
+async def handle_start_command(ack, body, client):
     try:
         await ack()
-        start_task.delay(body)
-    except SlackApiError as e:
-        raise e
+        logger.debug(f"/start, body: {body}")
+        if await validate_command_usage(body=body, client=client):
+            start_task.delay(body)
+    except Exception as e:
+        logger.error(f"Failed to start: {e}")
 
 
 async def open_ask_reason_modal(client, trigger_id, channel_id, judge):
@@ -50,8 +93,7 @@ async def open_ask_reason_modal(client, trigger_id, channel_id, judge):
 # 客役のjudgeを受け取り、Googleスプレットシートに保存して、ユーザーにURLを返して、入力を促す。
 async def save_messages(body, judge, reason):
     logger.debug(f"/{judge}, reason: {reason}, body: {body}")
-    invoked_user_id = body.get("user_id")
-    save_messages_task.delay(body, invoked_user_id, judge, reason)
+    save_messages_task.delay(body, judge, reason)
 
 
 @app.command("/lie")
@@ -59,15 +101,17 @@ async def handle_lie_command(ack, body, client):
     await ack()
     judge = "lie"
     channel_id = body.get("channel_id")
-    await open_ask_reason_modal(client, body.get("trigger_id"), channel_id=channel_id, judge=judge)
+    if await validate_command_usage(body, client):    
+        await open_ask_reason_modal(client, body.get("trigger_id"), channel_id=channel_id, judge=judge)
 
 
 @app.command("/trust")
-async def handle_trust_command(ack, body, client):
+async def handle_trust_command(ack, body, client, say):
     await ack()
     judge = "trust"
     channel_id = body.get("channel_id")
-    await open_ask_reason_modal(client, body.get("trigger_id"), channel_id=channel_id, judge=judge)
+    if await validate_command_usage(body, say):
+        await open_ask_reason_modal(client, body.get("trigger_id"), channel_id=channel_id, judge=judge)
 
 
 @app.view("message_submission")
@@ -92,7 +136,7 @@ async def on_open_spreadsheet(body, ack):
     action_id = body.get("actions")[0].get("action_id")
     logger.debug(f"on_open_spreadsheet_task, body: {body}, action_id: {action_id}")
     
-    on_open_spreadsheet_task(body)
+    on_open_spreadsheet_task.delay(body)
 
 
 @app.action("annotation_done")
@@ -101,7 +145,7 @@ async def on_annotation_done(body, ack):
     action_id = body.get("actions")[0].get("action_id")
     logger.debug(f"on_annotation_done_task, body: {body}, action_id: {action_id}")
     
-    on_annotation_done_task(body)
+    on_annotation_done_task.delay(body)
 
 
 async def main():
@@ -112,4 +156,3 @@ async def main():
 if __name__ == "__main__":
     import asyncio
     asyncio.run(main())
-

@@ -1,34 +1,22 @@
 import os
-import time
 import logging
 import traceback
-from celery import Celery
-import pandas as pd
-from slack_sdk.errors import SlackApiError
-from slack_sdk import WebClient
-import gspread
-from gspread_dataframe import set_with_dataframe
-from gspread_formatting import DataValidationRule, BooleanCondition, set_data_validation_for_cell_range, batch_updater, cellFormat
-from gspread_formatting.dataframe import format_with_dataframe, BasicFormatter
-from gspread.exceptions import GSpreadException, APIError
-from oauth2client.service_account import ServiceAccountCredentials
-
-from src.app.utils import unix_to_jst, str_to_bool
-from src.app.messages import start_message_block, start_message_to_sales_block, judge_receipt_message, ask_annotation_block, command_confirmation_message, thank_you_for_annotation_message, on_open_spreadsheet_block, final_result_announcement_block
-from src.db.game_info import GameInfoDB, GameInfoTable
-
 import setting
+import pandas as pd
+from celery import Celery
+from slack_sdk.errors import SlackApiError
+from src.app.utils import unix_to_jst
+from src.app.messages import (start_message_block, role_instruction_block,
+                                judge_receipt_message, ask_annotation_block, 
+                                command_confirmation_message, thank_you_for_annotation_message, 
+                                on_open_spreadsheet_block, final_result_announcement_block)
+from src.db.game_info import GameInfoDB
+from src.app.slack import SlackClientWrapper
+from src.app.gsheet import GSheetClientWrapper
+from src.app.utils import unix_to_jst, str_to_bool
 
-logger = logging.getLogger(__name__)
-
-slack_client = WebClient(token=setting.SLACK_BOT_TOKEN)
-
-scope = ['https://spreadsheets.google.com/feeds',
-        'https://www.googleapis.com/auth/drive',
-        'https://www.googleapis.com/auth/drive.file']
-
-creds = ServiceAccountCredentials.from_json_keyfile_name(setting.GCP_SERVICE_ACCOUNT_KEY, scope)
-google_client = gspread.authorize(creds)
+slack_client = SlackClientWrapper()
+gsheet_client = GSheetClientWrapper()
 
 celery = Celery(__name__)
 celery.conf.broker_url = os.environ.get("CELERY_BROKER_URL", "redis://localhost:6379")
@@ -36,467 +24,124 @@ celery.conf.result_backend = os.environ.get("CELERY_RESULT_BACKEND", "redis://lo
 
 game_info_db = GameInfoDB().get_instance()
 
+logger = logging.getLogger('slack_game_master')
+logger.setLevel(logging.DEBUG)
+
 MASTER_JUDGE_COL_INDEX = 5
 MASTER_REASON_COL_INDEX = 6
 MASTER_FINISH_COL_INDEX = 8
+CELERY_TIME_LIMIT = 300
 
-
-def log_error(message, channel_id=None, body=None, post_to_cor_channel=False):
-    logger.error(traceback.format_exc())
-    logger.error(message)
-
-    if channel_id and post_to_cor_channel:
-        post_message(channel_id=channel_id, message=str(message))
-
-    if channel_id:
-        message += f"<#{channel_id}>"   
-    if body:
-        message += f", <@{body['user_id']}>, `{body['command']}` "
-    post_message(channel_id=os.environ['ERROR_CHANNEL'], message=str(message))
-
-
-"""Send message"""
-def post_message(channel_id, message=None, blocks=None, ephermal=False, user_id=None):
-    try:
-        assert message or blocks, "Message or blocks must be provided"
+def handle_errors(func):
+    def wrapper(*args, **kwargs):
+        body = args[0]
+        channel_id = body.get("channel_id", None)
+        command = body.get("command", None)
         
-        if ephermal:
-            assert user_id, "User id must be provided when you send ephermal message"
-            slack_client.chat_postEphemeral(channel=channel_id, user=user_id, text=message, blocks=blocks)
-        else:    
-            slack_client.chat_postMessage(channel=channel_id, text=message, blocks=blocks)
-    
-    except SlackApiError as e:
-        message=f"Error posting message to <#{channel_id}>: {e}"
-        log_error(message)
-    
-    except AssertionError as e:
-        message=f"Error posting message to <#{channel_id}>: {e}"
-        log_error(message)
+        try:
+            return func(*args, **kwargs)
 
+        except Exception as e:
+            message = f"Error occurred in function {func.__name__}: {e}"
+            if command:
+                message = f"`{command}` " + message
+            if channel_id:
+                message = f"<#{channel_id}>" + message
+                
+            logger.error(message)
+            logger.error(traceback.format_exc())
 
-def send_direct_message(user_id, message):
-    try:
-        response = slack_client.conversations_open(users=user_id)
-        channel = response['channel']['id']
-        
-        slack_client.chat_postMessage(channel=channel, text=message)
-        
-    except SlackApiError as e:
-        message=f"Error sending to DM to <@{user_id}>: {e}"
-        log_error(message)
-
-
-"""Slack"""
-def get_user_id_by_email(email):
-    try:
-        response = slack_client.users_lookupByEmail(email=email)
-        user_id = response['user']['id']
-        return user_id
-
-    except SlackApiError as e:
-        if e.response["error"] == "users_not_found":
-            message=f"No user found with email in this workspace: {email}"
-        else:
-            message=f"Error: {e}"
-        log_error(message)
-
-
-def get_displayed_name(user_id):
-    try:
-        response = slack_client.users_info(user=user_id)
-        user_profile = response['user']['profile']
-        display_name = user_profile.get('display_name') or user_profile.get('real_name')
-        return display_name
-    
-    except SlackApiError as e:
-        message=f"Error fetching user info(<@{user_id}>): {e}"
-        log_error(message)
-
-
-def get_worckspace_members():
-    try:
-        response = slack_client.users_list()
-        members = response['members']
-        return members
-
-    except SlackApiError as e:
-        message=f"Error fetching members in this workspace: {e}"
-        log_error(message)
-
-
-def get_channel_members(channel_id):
-    try:
-        response = slack_client.conversations_members(channel=channel_id)
-        members = response['members']
-        return members
-
-    except SlackApiError as e:
-        message=f"Error fetching members in <#{channel_id}>: {e}"
-        log_error(message)
-
-
-def get_channel_id_list():
-    try:
-        response = slack_client.conversations_list(types="public_channel,private_channel")
-        channels = response['channels']
-        channel_id_list = list(map(lambda x: x.get("id"), channels))
-        return channel_id_list
-
-    except SlackApiError as e:
-        message=f"Error fetching channels in this workspace: {e}"
-        log_error(message)
-
-
-"""Google Spreadsheet"""
-def share_spreadsheet(spreadsheet, email):
-    try:
-        spreadsheet.share(email, perm_type='user', role='writer', with_link=False, notify=False)
-        logging.info(f"Shared spreadsheet with {email}")
-
-    except GSpreadException as e:
-        message=f"Error sharing spreadsheet with {email}: {e}"
-        log_error(message)
-
-
-def get_master_data(body, return_row_index=False):
-    try:
-        channel_name = body.get("channel_name")
-        worksheet_name = "Sheet1"
-        spreadsheet = google_client.open_by_key(os.environ['MASTER_SHEET_KEY'])
-
-        worksheet = spreadsheet.worksheet(worksheet_name)
-        df = pd.DataFrame(worksheet.get_all_records())
-        
-        assert len(df) != 0, "Masterスプレッドシートの取得に失敗しました。"
-        
-        matching_row = df[df['channel_name'] == channel_name]
-        
-        logging.debug(f"Matching row: {matching_row}")
-
-        assert len(matching_row) != 0, f"スプレッドシートにチャンネル名{channel_name}が存在しません。"
-        assert len(matching_row) == 1, f"スプレッドシートにチャンネル名{channel_name}が重複して存在しています。"
-        
-        # Update invited column
-        target_row_index = matching_row.index[0]+ 2
-        
-        if return_row_index:
-            return matching_row.to_dict(orient='records')[0], target_row_index
-        else:
-            return matching_row.to_dict(orient='records')[0]
-
-    except GSpreadException as e:
-        message=f"GSpreadException: {e}"
-        log_error(message)
-
-    except AssertionError as e:
-        message=str(e)
-        log_error(message, channel_id=body.get("channel_id"), body=body, post_to_cor_channel=True)
-
-
-def save_value_to_master_sheet(target_row_index, target_col_index, value):
-    try:
-        spreadsheet = google_client.open_by_key(os.environ['MASTER_SHEET_KEY'])
-        worksheet = spreadsheet.worksheet("Sheet1")
-        worksheet.update_cell(target_row_index, target_col_index, value)
-    
-    except GSpreadException as e:
-        message=f"GSpreadException: {e}"
-        log_error(message)
+    return wrapper
 
 
 """`/invite_players` command"""
-@celery.task(name="invite_players_task", time_limit=300)
+@celery.task(name="invite_players_task", time_limit=CELERY_TIME_LIMIT)
+@handle_errors
 def invite_players_task(body):
-    try:
-        assert body.get("user_id") in setting.STAFF_BOT_IDS, "スタッフ以外はこのコマンドを使用できません。"
-        
-        channel_id = body.get("channel_id")
-        
-        logger.debug(f"channel_id: {channel_id}")
-        
-        channel_id_list = get_channel_id_list()
-        logger.debug(f"Channel ids in this workspace: {channel_id_list}")
-        assert channel_id in channel_id_list, f"チャンネル<#{channel_id}>が存在しません。存在するチャンネルのID: {channel_id_list}"
-        post_message(message=command_confirmation_message(body=body), channel_id=channel_id, user_id=body['user_id'], ephermal=True)
-        
-        master_data, master_row_index = get_master_data(body, return_row_index=True)
-        customer_email = master_data.get("customer_email")
-        sales_email = master_data.get("sales_email")
-        customer_id = get_user_id_by_email(customer_email)
-        sales_id = get_user_id_by_email(sales_email)
-        case_id = master_data.get("case_id")
-        
-        workplace_members = get_worckspace_members()
-        logger.debug(f"Members in this workspace: {workplace_members}")
-        if customer_id in workplace_members:
-            raise SlackApiError(f"Customer <@{customer_id}> is already in this workspace.")
-        if sales_id in workplace_members:
-            raise SlackApiError(f"Sales <@{sales_id}> is already in this workspace.")
-        
-        game_info = dict(
-            channel_id=channel_id,
-            channel_name=body.get("channel_name"),
-            customer_email=customer_email,
-            sales_email=sales_email,
-            customer_id=customer_id,
-            sales_id=sales_id,
-            case_id = case_id,
-            is_liar=str_to_bool(master_data.get("is_liar")),
-            master_row_index=int(master_row_index),
-            is_started=False,
-        )
-        
-        game_info = game_info_db.save_game_info(**game_info)
-        
-        if isinstance(game_info, Exception):
-            raise game_info
-        else:
-            logging.info(f"Saved game info: {game_info}")
-
-        
-        members = get_channel_members(channel_id)
-        logger.debug(f"Members in <#{channel_id}>: {members}")
-        if customer_id in members and sales_id in members:
-            return
-        
-        response = slack_client.conversations_invite(channel=channel_id, users=f"{customer_id},{sales_id}")
-        
-        # TODO: Workpalceにまだ招待されていない場合のエラー処理
-        if not response["ok"] and response["error"] == "already_in_channel":
-            for error in response["errors"]:
-                if error["error"] == "already_in_channel":
-                    message=f"<@{error['user']}>は既にチャンネルに参加しています。"
-                    raise SlackApiError(response["error"], message)
-        
-    except AssertionError as e:
-        message=f"AssertionError: {e}"
-        log_error(message=message, channel_id=channel_id, body=body, post_to_cor_channel=True)
-
-    except SlackApiError as e:
-        message=f"Error inviting user: {e}"
-        log_error(message=message, channel_id=channel_id, body=body, post_to_cor_channel=True)
+    channel_id = body.get("channel_id")
     
-    except Exception as e:
-        message=str(e)
-        log_error(message=message, channel_id=channel_id, body=body)
+    logger.debug(f"channel_id: {channel_id}")
+    
+    channel_id_list = slack_client.get_channel_id_list()
+    logger.debug(f"Channel ids in this workspace: {channel_id_list}")
+    if channel_id not in channel_id_list:
+        raise ValueError(f"チャンネル<#{channel_id}>が存在しません。作成してください。\n存在するチャンネルのID: {channel_id_list}")
+    slack_client.post_message(message=command_confirmation_message(body=body), channel_id=channel_id, user_id=body['user_id'], ephermal=True)
+    
+    master_data, master_row_index = gsheet_client.get_master_data(body, return_row_index=True)
+    customer_email = master_data.get("customer_email")
+    sales_email = master_data.get("sales_email")
+    customer_id = slack_client.get_user_id_by_email(customer_email)
+    sales_id = slack_client.get_user_id_by_email(sales_email)
+    case_id = master_data.get("case_id")
+    
+    workplace_members = slack_client.get_worckspace_members()
+    logger.debug(f"Members in this workspace: {workplace_members}")
+    if customer_id in workplace_members:
+        raise SlackApiError(f"Customer <@{customer_id}> is already in this workspace.")
+    if sales_id in workplace_members:
+        raise SlackApiError(f"Sales <@{sales_id}> is already in this workspace.")
+    
+    game_info = dict(
+        channel_id=channel_id,
+        channel_name=body.get("channel_name"),
+        customer_email=customer_email,
+        sales_email=sales_email,
+        customer_id=customer_id,
+        sales_id=sales_id,
+        case_id = case_id,
+        is_liar=str_to_bool(master_data.get("is_liar")),
+        master_row_index=int(master_row_index),
+        is_started=False,
+    )
+    
+    game_info = game_info_db.save_game_info(**game_info)
+    
+    if isinstance(game_info, Exception):
+        raise game_info
+    else:
+        logger.info(f"Saved game info: {game_info}")
+
+    members = slack_client.get_channel_members(channel_id)
+    logger.debug(f"Members in <#{channel_id}>: {members}")
+    if customer_id in members:
+        raise SlackApiError(f"Customer(<@{customer_id}>) is already in the channel<#{channel_id}>.")
+    if sales_id in members:
+        raise SlackApiError(f"Sales(<@{sales_id}>) is already in the channel<#{channel_id}>.")
+    
+    response = slack_client.conversations_invite(channel=channel_id, users=f"{customer_id},{sales_id}")
+    
+    # TODO: Workpalceにまだ招待されていない場合のエラー処理
+    if not response["ok"] and response["error"] == "already_in_channel":
+        for error in response["errors"]:
+            if error["error"] == "already_in_channel":
+                message=f"<@{error['user']}>は既にチャンネルに参加しています。"
+                raise SlackApiError(response["error"], message)
 
 
 """`/start` command"""
-@celery.task(name="start_task", time_limit=300)
+@celery.task(name="start_task", time_limit=CELERY_TIME_LIMIT)
+@handle_errors
 def start_task(body):
-    try:
-        assert body.get("user_id") in setting.STAFF_BOT_IDS, "スタッフ以外はこのコマンドを使用できません。"
-        
-        channel_id = body.get("channel_id")
-        post_message(message=command_confirmation_message(body=body), channel_id=channel_id, user_id=body['user_id'], ephermal=True)
-        
-        game_info_db.set_started(channel_id)
-        game_info = game_info_db.get_game_info(channel_id)
-        
-        if game_info is None:
-            raise AssertionError(f"チャンネル{channel_id}のゲーム情報がDBに存在しません。")
-        
-        logger.debug(f"Game Info: {game_info}")
-        
-        customer_id = get_user_id_by_email(game_info.customer_email)
-        sales_id = get_user_id_by_email(game_info.sales_email)
-        is_liar = game_info.is_liar
-
-        # ルール説明+案件と詐欺師かどうかを通知するメッセージを送信
-        post_message(channel_id=channel_id, blocks=start_message_block(customer_id, sales_id))
-        time.sleep(1)
-        post_message(channel_id=channel_id, blocks=start_message_to_sales_block(case_id=game_info.case_id, is_liar=is_liar), ephermal=True, user_id=game_info.sales_id)
+    logger.debug(f"body: {body}")
     
-    except AssertionError as e:
-        message=str(e)
-        log_error(message=message, channel_id=channel_id, body=body, post_to_cor_channel=True)
-    except AttributeError as e:
-        log_error(message=message, body=body)
-    except Exception as e:
-        log_error(message=message)
-
-
-"""Regarding to `/lie` or `/trust` command"""
-#def add_validation_rules(spreadsheet_id, sheet_id, credentials_path):
-#    # Load credentials
-#    credentials = service_account.Credentials.from_service_account_file(credentials_path, scopes=['https://www.googleapis.com/auth/spreadsheets'])
-#
-#    # Build the Google Sheets API client
-#    service = build('sheets', 'v4', credentials=credentials)
-#
-#    # Define the data validation rules
-#    rules = [
-#        {
-#            "range": {
-#                "sheetId": sheet_id,
-#                "startRowIndex": 1,  # Exclude header row
-#                "endRowIndex": 9999,
-#                "startColumnIndex": 4,  # lie column (zero-based index)
-#                "endColumnIndex": 5
-#            },
-#            "booleanRule": {
-#                "condition": {
-#                    "type": "CUSTOM_FORMULA",
-#                    "values": [
-#                        {
-#                            "userEnteredValue": '=IF($C2="customer", $E2=FALSE, TRUE)'
-#                        }
-#                    ]
-#                },
-#                "format": {
-#                    "backgroundColor": {
-#                        "red": 1,
-#                        "green": 0,
-#                        "blue": 0
-#                    }
-#                }
-#            }
-#        },
-#        {
-#            "range": {
-#                "sheetId": sheet_id,
-#                "startRowIndex": 1,  # Exclude header row
-#                "endRowIndex": 9999,
-#                "startColumnIndex": 5,  # suspicious column (zero-based index)
-#                "endColumnIndex": 6
-#            },
-#            "booleanRule": {
-#                "condition": {
-#                    "type": "CUSTOM_FORMULA",
-#                    "values": [
-#                        {
-#                            "userEnteredValue": '=IF($C2="sales", $F2=FALSE, TRUE)'
-#                        }
-#                    ]
-#                },
-#                "format": {
-#                    "backgroundColor": {
-#                        "red": 1,
-#                        "green": 0,
-#                        "blue": 0
-#                    }
-#                }
-#            }
-#        }
-#    ]
-#
-#    # Set the data validation rules
-#    body = {
-#        "requests": [
-#            {
-#                "setDataValidation": {
-#                    "rule": rule
-#                }
-#            } for rule in rules
-#        ]
-#    }
-#
-#    try:
-#        response = service.spreadsheets().batchUpdate(spreadsheetId=spreadsheet_id, body=body).execute()
-#        print(f"Added validation rules to spreadsheet with ID '{spreadsheet_id}'")
-#        return response
-#    
-#    except HttpError as e:
-#        message=f"Error adding validation rules to spreadsheet with ID '{spreadsheet_id}': {e}"
-#        log_error(message=message)
-
-
-def save_result(game_info: GameInfoTable, df):
-    try:
-        channel_id = game_info.channel_id
-        customer_email = game_info.customer_email
-        sales_email = game_info.sales_email
-        worksheet_name = game_info.channel_name
-        
-        # 編集権限を付与
-        spreadsheet = google_client.open_by_key(os.environ['SPREAD_SHEET_KEY'])
-        
-        for email in setting.STAFF_BOT_ID_GMAILS + [customer_email, sales_email]:
-            share_spreadsheet(spreadsheet=spreadsheet, email=email)
-        
-        # 既に同じ名前のworksheetが存在すれば、それを上書きする。
-        worksheet_list = spreadsheet.worksheets()
-        worksheet = None
-        for ws in worksheet_list:
-            if ws.title == worksheet_name:
-                worksheet = ws
-                break
-        if worksheet is None:
-            worksheet = spreadsheet.add_worksheet(title=worksheet_name, rows=10, cols=4)
-        worksheet.clear()
-        set_with_dataframe(worksheet, df)
-
-        # ヘッダーのフォーマッティング
-        header_formatter = BasicFormatter(
-            freeze_headers=True,
-        )
-        format_with_dataframe(worksheet, df, header_formatter)
-        
-        with batch_updater(worksheet.spreadsheet) as batch:
-            message_column_formatting = cellFormat(
-                horizontalAlignment="LEFT",
-                wrapStrategy="WRAP"
-            )
-            batch.set_column_width(worksheet, 'D:D', 1000)
-            batch.format_cell_range(worksheet, 'D:D', message_column_formatting)
-        
-        # lieカラムのTrue, Falseをチェックボックに
-        validation_rule = DataValidationRule(
-            BooleanCondition('BOOLEAN', ['TRUE', 'FALSE']),
-            showCustomUi=True
-        )
-        
-        # 編集制限
-        # lie/suspiciousカラムに編集制限をかける
-        if game_info.is_liar: # 詐欺師の場合のみ嘘の発話をアノテーション出来る
-            lie_col_range = f'E2:E{len(df.index) + 1}'
-            set_data_validation_for_cell_range(worksheet, lie_col_range, validation_rule)   
-            worksheet.add_protected_range(
-                lie_col_range,
-                editor_users_emails=setting.STAFF_BOT_ID_GMAILS + [sales_email],
-            )
-            
-        suspicious_col_range = f'F2:F{len(df.index) + 1}'
-        set_data_validation_for_cell_range(worksheet, suspicious_col_range, validation_rule)
-        worksheet.add_protected_range(
-            suspicious_col_range,
-            editor_users_emails=setting.STAFF_BOT_ID_GMAILS + [customer_email]
-        )
-        
-        other_cols_range = f"A1:D{len(df.index) + 1}"
-        header_range = "A1:F1"
-        
-        worksheet.add_protected_range(
-            other_cols_range,
-            editor_users_emails=setting.STAFF_BOT_EMALS
-        )
-        worksheet.add_protected_range(
-            header_range,
-            editor_users_emails=setting.STAFF_BOT_EMALS
-        )
-        
-        # add_validation_rules(spreadsheet_id=spreadsheet.id, sheet_id=worksheet.id)
-        
-        # ミスを防ぐため、フィルターを掛けて、営業役の発話だけを見れるようにする。
-        # worksheet.set_basic_filter(filters={'columnName': 'role', 'criteria': {'values': ['sales']}})
-        
-        return worksheet.url
-
-    except APIError as e:
-        message = f"API Error: {e}"
-        log_error(message=message, channel_id=channel_id)
-        
-    except GSpreadException as e:
-        message = f"Error saving messages: {e}"
-        log_error(message=message, channel_id=channel_id)
+    channel_id = body.get("channel_id")
+    slack_client.post_message(message=command_confirmation_message(body=body), channel_id=channel_id, user_id=body['user_id'], ephermal=True)
     
-    except Exception as e:
-        log_error(message=f"{e}", channel_id=channel_id)
+    game_info_db.set_started(channel_id)
+    game_info = game_info_db.get_game_info(channel_id)
+    
+    logger.debug(f"Game Info: {game_info}")
+    
+    slack_client.post_message(channel_id=channel_id, blocks=start_message_block(customer_id=game_info.customer_id, sales_id=game_info.sales_id))
+    
+    slack_client.send_direct_message(user_id=game_info.customer_id, blocks=role_instruction_block(channel_id=channel_id, case_id=game_info.case_id, is_liar=game_info.is_liar, role="customer"))
+    slack_client.send_direct_message(user_id=game_info.sales_id, blocks=role_instruction_block(channel_id=channel_id, case_id=game_info.case_id, is_liar=game_info.is_liar, role="sales"))
 
 
-@celery.task(name="save_messages_task", time_limit=300)
-def save_messages_task(body, invoked_user_id, judge, reason):
+@celery.task(name="save_messages_task", time_limit=CELERY_TIME_LIMIT)
+@handle_errors
+def save_messages_task(body, judge, reason):
     """
         客役が/lie or /trustでジャッジしたときに呼ばれ、Slackのメッセージ全て読みこんで、
         Googleスプレットシートに'{チャンネル名}_{lie or trust}'のワークシートを追加して保存。
@@ -504,7 +149,6 @@ def save_messages_task(body, invoked_user_id, judge, reason):
 
     Args:
         body: Slackのリクエストボディ
-        invoked_user_id (str): コマンドを使ったユーザーのID
         judge (Judge): 客が勧誘役が詐欺師かどうか判断したもの. lie or trust.
         reason: 客が勧誘役が詐欺師だと思った理由
     
@@ -513,140 +157,116 @@ def save_messages_task(body, invoked_user_id, judge, reason):
 
     """
     
-    try:
-        assert invoked_user_id not in setting.STAFF_BOT_IDS, f"スタッフは/lie|/trustコマンドを使わないでください。"
-        logger.debug(f"save_messages_task invoked. body: {body}, invoked_user_id: {invoked_user_id}, judge: {judge}")
-        
-        channel_id = body['channel_id']
-        post_message(message=command_confirmation_message(body=body), user_id=invoked_user_id, channel_id=channel_id, ephermal=True)        
-        
-        game_info = game_info_db.get_game_info(channel_id)
-        customer_id = game_info.customer_id
-        sales_id = game_info.sales_id
-        
-        assert game_info.is_started == True, f"まだゲームが始まっていません。 `/lie` `/trust` コマンドはゲーム開始後に使用してください 。"
-        assert customer_id == invoked_user_id, f"客役の<@{customer_id}>さん以外は/lie|/trustコマンドを使わないでください。"
-        
-        post_message(message=judge_receipt_message(user_id=customer_id), channel_id=channel_id)
-        game_info_db.set_judge(channel_id=channel_id, judge=judge)
-        
-        displayed_customer_name = get_displayed_name(customer_id)
-        displayed_sales_name = get_displayed_name(sales_id)
-        annotations = dict(ts=[], user=[], role=[], message=[], lie=[], suspicious=[])
-        cursor = None
-        while True:
-            response = slack_client.conversations_history(
-                channel=channel_id,
-                exclude_archived=True,
-                types="message",
-                limit=1000,
-                cursor=cursor
-            )
-            
-            for message in response["messages"]:
-                if "subtype" not in message and message["user"] in [customer_id, sales_id]:
-                    annotations["ts"].append(float(message['ts']))
-                    annotations["user"].append(displayed_customer_name if message["user"] == customer_id else displayed_sales_name)
-                    annotations["role"].append("customer" if message["user"] == customer_id else "sales")
-                    annotations["message"].append(message["text"])
-                    annotations["lie"].append(False)
-                    annotations["suspicious"].append(False)
-
-            if response['has_more']:
-                cursor = response['response_metadata']['next_cursor']
-            else:
-                break
-        
-        df = pd.DataFrame.from_dict(annotations).sort_values(by="ts").reset_index(drop=True)
-        df['ts'] = df['ts'].apply(unix_to_jst)
-        
-        worksheet_url = save_result(game_info, df)
-        logger.debug(f"worksheet_url: {worksheet_url}")
-        game_info_db.set_worksheet_url(channel_id=channel_id, worksheet_url=worksheet_url)
-
-        post_message(blocks=ask_annotation_block(worksheet_url, role="customer"), channel_id=game_info.channel_id, ephermal=True, user_id=customer_id)
-        if game_info.is_liar: # 営業訳のアノテーションは、詐欺師でない場合のみ
-            post_message(blocks=ask_annotation_block(worksheet_url, role="sales"), channel_id=game_info.channel_id, ephermal=True, user_id=sales_id)
-
-        save_value_to_master_sheet(target_row_index=game_info.master_row_index, target_col_index=MASTER_JUDGE_COL_INDEX, value=judge)
-        save_value_to_master_sheet(target_row_index=game_info.master_row_index, target_col_index=MASTER_REASON_COL_INDEX, value=reason)
-
-        return True
-
-    except SlackApiError as e:
-        message=e.response['error']
-        log_error(message=message, channel_id=channel_id, body=body)
+    logger.debug(f"save_messages_task invoked. body: {body}, judge: {judge}")
     
-    except AssertionError as e:
-        log_error(message=str(e), channel=channel_id, body=body, post_to_cor_channel=True)
-        
-    except AttributeError as e:
-        log_error(message=str(e), channel_id=channel_id, body=body)
+    channel_id = body['channel_id']
+    invoked_user_id = body.get("user_id")
+    slack_client.post_message(message=command_confirmation_message(body=body), user_id=invoked_user_id, channel_id=channel_id, ephermal=True)        
     
-    except Exception as e:
-        log_error(message=str(e), channel_id=channel_id, body=body)
+    game_info = game_info_db.get_game_info(channel_id)
+    customer_id = game_info.customer_id
+    sales_id = game_info.sales_id
+    
+    slack_client.post_message(message=judge_receipt_message(user_id=customer_id), channel_id=channel_id)
+    game_info_db.set_judge(channel_id=channel_id, judge=judge)
+    
+    displayed_customer_name = slack_client.get_displayed_name(customer_id)
+    displayed_sales_name = slack_client.get_displayed_name(sales_id)
+    annotations = dict(ts=[], user=[], role=[], message=[], lie=[], suspicious=[], reason=[])
+    cursor = None
+    while True:
+        response = slack_client.conversations_history(
+            channel=channel_id,
+            exclude_archived=True,
+            types="message",
+            limit=1000,
+            cursor=cursor
+        )
+        
+        for message in response["messages"]:
+            if "subtype" not in message and message["user"] in [customer_id, sales_id]:
+                annotations["ts"].append(float(message['ts']))
+                annotations["user"].append(displayed_customer_name if message["user"] == customer_id else displayed_sales_name)
+                annotations["role"].append("customer" if message["user"] == customer_id else "sales")
+                annotations["message"].append(message["text"])
+                annotations["lie"].append(False)
+                annotations["suspicious"].append(False)
+                annotations["reason"].append("")
+
+        if response['has_more']:
+            cursor = response['response_metadata']['next_cursor']
+        else:
+            break
+    
+    df = pd.DataFrame.from_dict(annotations).sort_values(by="ts").reset_index(drop=True)
+    df['ts'] = df['ts'].apply(unix_to_jst)
+    logger.debug(f"df: {df}")
+    
+    worksheet_url = gsheet_client.save_dialogue(game_info, df)
+    logger.debug(f"worksheet_url: {worksheet_url}")
+    game_info_db.set_worksheet_url(channel_id=channel_id, worksheet_url=worksheet_url)
+
+    slack_client.post_message(blocks=ask_annotation_block(worksheet_url, role="customer"), channel_id=game_info.channel_id, ephermal=True, user_id=customer_id)
+    if game_info.is_liar: # 営業訳のアノテーションは、詐欺師でない場合のみ
+        slack_client.post_message(blocks=ask_annotation_block(worksheet_url, role="sales"), channel_id=game_info.channel_id, ephermal=True, user_id=sales_id)
+
+    gsheet_client.save_value_to_master_sheet(target_row_index=game_info.master_row_index, target_col_index=MASTER_JUDGE_COL_INDEX, value=judge)
+    gsheet_client.save_value_to_master_sheet(target_row_index=game_info.master_row_index, target_col_index=MASTER_REASON_COL_INDEX, value=reason)
+
+    return True
 
 
+@celery.task(name="on_open_spreadsheet_task", time_limit=CELERY_TIME_LIMIT)
+@handle_errors
 def on_open_spreadsheet_task(body):
-    try:
-        channel_id = body['container']['channel_id']
-        invoked_user_id = body['user']['id']
-        
-        if invoked_user_id in setting.STAFF_BOT_IDS:
-            return
-        post_message(blocks=on_open_spreadsheet_block(user_id=invoked_user_id), channel_id=channel_id, user_id=invoked_user_id, ephermal=True)
-
-    except Exception as e:
-        log_error(message=str(e), channel_id=channel_id)
+    channel_id = body['container']['channel_id']
+    invoked_user_id = body['user']['id']
+    
+    if invoked_user_id in setting.STAFF_BOT_IDS:
+        return
+    slack_client.post_message(blocks=on_open_spreadsheet_block(user_id=invoked_user_id), channel_id=channel_id, user_id=invoked_user_id, ephermal=True)
 
 
+@celery.task(name="on_annotation_done_task", time_limit=CELERY_TIME_LIMIT)
+@handle_errors
 def on_annotation_done_task(body):
-    try:
-        channel_id = body['container']['channel_id']
-        invoked_user_id = body['user']['id']
-        assert invoked_user_id not in setting.STAFF_BOT_IDS, "スタッフは `アノテーション完了ボタン` を押さないでください。"
-        
-        game_info = game_info_db.get_game_info(channel_id)
-        customer_id = game_info.customer_id
-        sales_id = game_info.sales_id
-        
-        assert game_info.judge is not None, f"客役の<@{customer_id}>がまだ `/lie` | `/trust` コマンドを入力していないため、ゲームが終わっていません。\n `/done` コマンドはゲーム終了後に使用してください 。"
-        logger.debug(f"game_info: {game_info}")
-        logger.debug(f"{game_info.is_liar}")
-        
-        # 営業役が詐欺師でない場合、アノテーションを要求しない。
-        if not game_info.is_liar:
+    channel_id = body['container']['channel_id']
+    invoked_user_id = body['user']['id']
+    assert invoked_user_id not in setting.STAFF_BOT_IDS, "スタッフは `アノテーション完了ボタン` を押さないでください。"
+    
+    game_info = game_info_db.get_game_info(channel_id)
+    customer_id = game_info.customer_id
+    sales_id = game_info.sales_id
+    
+    assert game_info.judge is not None, f"客役の<@{customer_id}>がまだ `/lie` | `/trust` コマンドを入力していないため、ゲームが終わっていません。\n `/done` コマンドはゲーム終了後に使用してください 。"
+    logger.info(f"game_info: {game_info}")
+    
+    # 営業役が詐欺師でない場合、アノテーションを要求しない。
+    if not game_info.is_liar:
+        game_info_db.set_sales_done(channel_id)
+    
+    if invoked_user_id == customer_id:
+        if game_info.customer_done:
+            return
+        else:
+            game_info_db.set_customer_done(channel_id)
+    elif invoked_user_id == sales_id:
+        if game_info.sales_done:
+            return
+        else:
             game_info_db.set_sales_done(channel_id)
-        
-        if invoked_user_id == customer_id:
-            if game_info.customer_done:
-                return
-            else:
-                game_info_db.set_customer_done(channel_id)
-        elif invoked_user_id == sales_id:
-            if game_info.sales_done:
-                return
-            else:
-                game_info_db.set_sales_done(channel_id)
-        
-        logger.debug(f"customer_done: {game_info.customer_done}, sales_done: {game_info.sales_done}")
-        game_info = game_info_db.get_game_info(channel_id)
-        
-        post_message(channel_id=channel_id, message=thank_you_for_annotation_message(invoked_user_id), user_id=invoked_user_id, ephermal=True)
-        # TODO: 編集権限をここで剥奪する。
-        
-        # 二人とも終わっていれば、結果を発表する。
-        logger.debug(f"game_info: {game_info}")
-        logger.debug(f"customer_done: {game_info.customer_done}, sales_done: {game_info.sales_done}")
-        if game_info.customer_done and game_info.sales_done:
-            judge = game_info.judge
-            is_liar = game_info.is_liar
-            post_message(blocks=final_result_announcement_block(customer_id, sales_id, is_liar, judge), channel_id=channel_id)
-            save_value_to_master_sheet(target_row_index=game_info.master_row_index, target_col_index=MASTER_FINISH_COL_INDEX, value=True)
-
-    except AssertionError as e:
-        message=str(e)
-        log_error(message=message, channel_id=channel_id, post_to_cor_channel=True)
-
-    except AttributeError as e:
-        log_error(message=str(e), channel_id=channel_id)
+    
+    logger.debug(f"customer_done: {game_info.customer_done}, sales_done: {game_info.sales_done}")
+    game_info = game_info_db.get_game_info(channel_id)
+    
+    slack_client.post_message(channel_id=channel_id, message=thank_you_for_annotation_message(invoked_user_id), user_id=invoked_user_id, ephermal=True)
+    # TODO: 編集権限をここで剥奪する。
+    
+    # 二人とも終わっていれば、結果を発表する。
+    logger.debug(f"game_info: {game_info}")
+    logger.debug(f"customer_done: {game_info.customer_done}, sales_done: {game_info.sales_done}")
+    if game_info.customer_done and game_info.sales_done:
+        judge = game_info.judge
+        is_liar = game_info.is_liar
+        slack_client.post_message(blocks=final_result_announcement_block(customer_id, sales_id, is_liar, judge), channel_id=channel_id)
+        gsheet_client.save_value_to_master_sheet(target_row_index=game_info.master_row_index, target_col_index=MASTER_FINISH_COL_INDEX, value=True)
