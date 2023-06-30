@@ -12,7 +12,7 @@ from src.db.game_info import GameInfoTable
 from src.app.slack import SlackClientWrapper
 slack_client = SlackClientWrapper()
 
-logger = logging.getLogger("slack_game_master")
+logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 
 
@@ -80,21 +80,21 @@ class GSheetClientWrapper:
         worksheet.update_cell(target_row_index, target_col_index, value)
 
     def save_dialogue(self, game_info: GameInfoTable, df: pd.DataFrame):
+        logger.debug(f"game_info: {game_info}")
         sheet = self.client.open_by_key(setting.SPREAD_SHEET_KEY)
 
         for email in setting.STAFF_BOT_EMALS + [game_info.customer_email, game_info.sales_email]:
-            worksheet = sheet.worksheet(email)
-            worksheet.append_row(df.loc[0].values.tolist())
+            self.share_spreadsheet(sheet, email)
 
         # 既に同じ名前のworksheetが存在すれば、それを上書きする。
         worksheet_list = sheet.worksheets()
         worksheet = None
         for ws in worksheet_list:
-            if ws.title == game_info.channel_id:
+            if ws.title == game_info.channel_name:
                 worksheet = ws
                 break
         if worksheet is None:
-            worksheet = sheet.add_worksheet(title=game_info.channel_id, rows=10, cols=4)
+            worksheet = sheet.add_worksheet(title=game_info.channel_name, rows=10, cols=4)
         worksheet.clear()
         set_with_dataframe(worksheet, df)
 
@@ -128,18 +128,21 @@ class GSheetClientWrapper:
 
         # 編集制限
         # lie/suspiciousカラムに編集制限をかける
-
         if game_info.is_liar:  # 詐欺師の場合のみ嘘の発話をアノテーション出来る
-            worksheet.add_protected_range(worksheet, lie_col_range, setting.STAFF_BOT_ID_GMAILS + [game_info.sales_email])
-            worksheet.add_protected_range(worksheet, reason_col_range, setting.STAFF_BOT_ID_GMAILS + [game_info.sales_email])
-        worksheet.add_protected_range(worksheet, suspicious_col_range, setting.STAFF_BOT_ID_GMAILS + [game_info.customer_email])
-        worksheet.add_protected_range(worksheet, reason_col_range, setting.STAFF_BOT_ID_GMAILS + [game_info.customer_email])
+            logger.debug(f"is_liar: {game_info.is_liar}")
+            worksheet.add_protected_range(name=lie_col_range, editor_users_emails=setting.STAFF_BOT_ID_GMAILS + [game_info.sales_email])
+            worksheet.add_protected_range(name=reason_col_range, editor_users_emails=setting.STAFF_BOT_ID_GMAILS + [game_info.customer_email, game_info.sales_email])
+            worksheet.add_protected_range(name=suspicious_col_range, editor_users_emails=setting.STAFF_BOT_ID_GMAILS + [game_info.customer_email])
+        else:
+            logger.debug(f"is_liar: {game_info.is_liar}")
+            worksheet.add_protected_range(name=suspicious_col_range, editor_users_emails=setting.STAFF_BOT_ID_GMAILS + [game_info.customer_email])
+            worksheet.add_protected_range(name=reason_col_range, editor_users_emails=setting.STAFF_BOT_ID_GMAILS + [game_info.customer_email])
 
         other_cols_range = f"A1:D{len(df.index) + 1}"
         header_range = "A1:F1"
 
-        worksheet.add_protected_ranges(worksheet, other_cols_range, setting.STAFF_BOT_ID_GMAILS)
-        worksheet.add_protected_ranges(worksheet, header_range, setting.STAFF_BOT_ID_GMAILS)
+        worksheet.add_protected_range(name=other_cols_range, editor_users_emails=setting.STAFF_BOT_ID_GMAILS)
+        worksheet.add_protected_range(name=header_range, editor_users_emails=setting.STAFF_BOT_ID_GMAILS)
 
         return worksheet.url
 

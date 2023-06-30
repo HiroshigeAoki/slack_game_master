@@ -103,14 +103,20 @@ class GameInfoDB:
         session.commit()
         self.Session.remove()
     
-    def set_customer_done(self, channel_id):
+    def set_customer_done(self, channel_id, undo=False):
         session = self.Session()
-        session.query(GameInfoTable).filter_by(channel_id=channel_id).update({"customer_done": True})
+        if undo:
+            session.query(GameInfoTable).filter_by(channel_id=channel_id).update({"customer_done": False})
+        else:
+            session.query(GameInfoTable).filter_by(channel_id=channel_id).update({"customer_done": True})
         session.commit()
         self.Session.remove()
     
-    def set_sales_done(self, channel_id):
+    def set_sales_done(self, channel_id, undo=False):
         session = self.Session()
-        session.query(GameInfoTable).filter_by(channel_id=channel_id).update({"sales_done": True})
+        if undo:
+            session.query(GameInfoTable).filter_by(channel_id=channel_id).update({"sales_done": False})
+        else:
+            session.query(GameInfoTable).filter_by(channel_id=channel_id).update({"sales_done": True})
         session.commit()
         self.Session.remove()

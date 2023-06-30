@@ -1,14 +1,14 @@
 import os
-import logging
 import traceback
 import setting
 import pandas as pd
+import logging
 from celery import Celery
 from celery.utils.log import get_task_logger
 from slack_sdk.errors import SlackApiError
 from src.app.utils import unix_to_jst
 from src.app.messages import (start_message_block, role_instruction_block,
-                                judge_receipt_message, ask_annotation_block, 
+                                judge_receipt_message, ask_annotation_block, to_honest_sales_message,
                                 command_confirmation_message, thank_you_for_annotation_message, 
                                 on_open_spreadsheet_block, final_result_announcement_block)
 from src.db.game_info import GameInfoDB
@@ -24,7 +24,8 @@ celery = Celery(__name__)
 celery.conf.broker_url = os.environ.get("CELERY_BROKER_URL", "redis://localhost:6379")
 celery.conf.result_backend = os.environ.get("CELERY_RESULT_BACKEND", "redis://localhost:6379")
 
-logger = get_task_logger(__name__)
+#logger = get_task_logger(__name__)
+logger = logging.getLogger(__name__)
 logger = setup_loggers(logger)
 
 game_info_db = GameInfoDB().get_instance()
@@ -111,14 +112,7 @@ def invite_players_task(body):
     if sales_id in members:
         raise SlackApiError(f"Sales(<@{sales_id}>) is already in the channel<#{channel_id}>.")
     
-    response = slack_client.conversations_invite(channel=channel_id, users=f"{customer_id},{sales_id}")
-    
-    # TODO: Workpalceにまだ招待されていない場合のエラー処理
-    if not response["ok"] and response["error"] == "already_in_channel":
-        for error in response["errors"]:
-            if error["error"] == "already_in_channel":
-                message=f"<@{error['user']}>は既にチャンネルに参加しています。"
-                raise SlackApiError(response["error"], message)
+    slack_client.conversations_invite(channel=channel_id, users=f"{customer_id},{sales_id}")
 
 
 """`/start` command"""
@@ -204,17 +198,20 @@ def save_messages_task(body, judge, reason):
     df['ts'] = df['ts'].apply(unix_to_jst)
     logger.debug(f"df: {df}")
     
-    worksheet_url = gsheet_client.save_dialogue(game_info, df)
+    worksheet_url = gsheet_client.save_dialogue(game_info=game_info, df=df)
     logger.debug(f"worksheet_url: {worksheet_url}")
     game_info_db.set_worksheet_url(channel_id=channel_id, worksheet_url=worksheet_url)
 
-    slack_client.post_message(blocks=ask_annotation_block(worksheet_url, role="customer"), channel_id=game_info.channel_id, ephermal=True, user_id=customer_id)
-    if game_info.is_liar: # 営業訳のアノテーションは、詐欺師でない場合のみ
-        slack_client.post_message(blocks=ask_annotation_block(worksheet_url, role="sales"), channel_id=game_info.channel_id, ephermal=True, user_id=sales_id)
+    if not game_info.is_liar:
+        slack_client.post_message(message=to_honest_sales_message(sales_id=sales_id), user_id=sales_id, channel_id=channel_id, ephermal=True)
+        
+    slack_client.post_message(blocks=ask_annotation_block(worksheet_url, game_info=game_info), channel_id=channel_id)
 
     gsheet_client.save_value_to_master_sheet(target_row_index=game_info.master_row_index, target_col_index=MASTER_JUDGE_COL_INDEX, value=judge)
     gsheet_client.save_value_to_master_sheet(target_row_index=game_info.master_row_index, target_col_index=MASTER_REASON_COL_INDEX, value=reason)
 
+    game_info_db.set_customer_done(channel_id=channel_id, undo=True)
+    game_info_db.set_sales_done(channel_id=channel_id, undo=True)
     return True
 
 
@@ -223,10 +220,7 @@ def save_messages_task(body, judge, reason):
 def on_open_spreadsheet_task(body):
     channel_id = body['container']['channel_id']
     invoked_user_id = body['user']['id']
-    
-    if invoked_user_id in setting.STAFF_BOT_IDS:
-        return
-    slack_client.post_message(blocks=on_open_spreadsheet_block(user_id=invoked_user_id), channel_id=channel_id, user_id=invoked_user_id, ephermal=True)
+    slack_client.post_message(blocks=on_open_spreadsheet_block(channel_id=channel_id, user_id=invoked_user_id), user_id=invoked_user_id, channel_id=channel_id, ephermal=True)
 
 
 @celery.task(name="on_annotation_done_task", time_limit=CELERY_TIME_LIMIT)

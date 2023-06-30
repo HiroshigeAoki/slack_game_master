@@ -2,6 +2,7 @@ import json
 import logging
 import setting
 from src.app.gsheet import GSheetClientWrapper
+from src.db.game_info import GameInfoTable
 
 logger = logging.getLogger("slack_game_master")
 logger.setLevel(logging.DEBUG)
@@ -49,11 +50,11 @@ def role_instruction_block(channel_id, case_id, role, is_liar):
     case_record = gsheet_client.get_case_data(case_id=case_id)
     role_instruction_message = (
         f"<#{channel_id}>\n"
-        "*ゲームの進め方*\n"
     )
     if role == "customer":
         role_instruction_message += (
             f"{case_record.get('customer_scenario')}\n"
+            f"*ゲームの進め方*\n"
             f"`客役` のゲーム進め方は、<{setting.CUSTOMER_INSTRUCTION}|*このGoogleドキュメント*>をご確認ください。\n"
         )
     elif role == "sales":
@@ -84,29 +85,35 @@ def role_instruction_block(channel_id, case_id, role, is_liar):
             "type": "mrkdwn",
             "text": (
                 "*営業案件*\n"
-                f"<{case_record.get('description_url')}|*この営業案件*>をご確認ください(相手にはこの内容は共有されていません。)\n"
+                f"<{case_record.get('description_url')}|*このGoogleドキュメント*>をご確認ください(相手にはこの内容は共有されていません。)\n"
             )
         },
     }
     
-    return [role_instruction_section, case_description_section]
+    role_instruction_block = [role_instruction_section]
+    if role == "sales":
+        role_instruction_block.append(case_description_section)
+    
+    return role_instruction_block
 
 
 def judge_receipt_message(user_id):
-    return f"<@{user_id}> ジャッジを受け付けました。ありがとうございます。\n スプレッドシートを作成しますのでしばらくお待ち下さい。"
+    return f"<@{user_id}> 判定を受け付けました。ありがとうございます。\nスプレッドシートを作成し、リンクを送りますのでしばらくお待ち下さい。"
 
 
-def ask_annotation_block(worksheet_url, role="customer"):
-    col_name = "suspicious" if role == "customer" else "lie"
+def ask_annotation_block(worksheet_url: str, game_info: GameInfoTable):
     return [
         {
             "type": "section",
             "text": {
                 "type": "mrkdwn",
                 "text": (
-                    "スプレッドシートにアノテーションをお願いします。 \n"\
-                    f"*アノテーション先*: `{col_name}` カラム\n"
-                    "両者のアノテーションが完了したら、ゲーム結果をお伝えします。"\
+                    "スプレッドシートにアノテーションをお願いします。 \n\n"
+                    f"*アノテーション先*:\n"
+                    f"<@{game_info.sales_id}>: `lie` カラム\n\n"
+                    f"<@{game_info.customer_id}>: `suspicious` カラム\n\n"
+                    "アノテーション完了後、スプレットシートを開いた後に届く\n"
+                    "「アノテーション完了ボタン」を押してください。\n"
                 )
             },
             "accessory": {
@@ -121,6 +128,10 @@ def ask_annotation_block(worksheet_url, role="customer"):
             }
         },
     ]
+
+
+def to_honest_sales_message(sales_id: str):
+    return f"<@{sales_id}> 今回あなたは詐欺師ではないのでアノテーションをしなくて大丈夫です。"
 
 
 def ask_reason_block(channel_id, judge):
@@ -145,7 +156,7 @@ def ask_reason_block(channel_id, judge):
                 "type": "section",
                 "text": {
                     "type": "mrkdwn",
-                    "text": f"*Selected:* {judge_text}"  # Show the selected judge value
+                    "text": f"*判定:* {judge_text}"  # Show the selected judge value
                 }
             },
             {
@@ -169,17 +180,15 @@ def ask_reason_block(channel_id, judge):
     }
 
 
-def on_open_spreadsheet_block(user_id):
+def on_open_spreadsheet_block(channel_id, user_id):
     return [
                 {
                     "type": "section",
                     "text": {
                         "type": "mrkdwn",
                         "text": (
-
-                            f"""
-                            <@{user_id}>アノテーション完了後、 `アノテーション完了` ボタンを押してください。 \
-                            """
+                            f"<#{channel_id}>\n"
+                            f"<@{user_id}>アノテーション完了後、 `アノテーション完了` ボタンを押してください。"
                         )
                     },
                 },
@@ -233,3 +242,19 @@ def final_result_announcement_block(customer_id, sales_id, is_liar, judge):
             }
         }
     ]
+    
+
+def access_denied_message(user_id):
+    return f"<@{user_id}> このコマンドは管理者のみが実行できます。"
+
+
+def no_game_info_message(user_id):
+    return f"<@{user_id}> DBにゲーム情報が入っていません。DB初期化のため、 `/invite_players` コマンドを実行してください。"
+
+
+def game_not_started_message(user_id):
+    return f"<@{user_id}> ゲームが開始されていません。"
+
+
+def wrong_user_message(user_id, customer_id):
+    return f"<@{user_id}> 客役の<@{customer_id}>以外は/lie|/trustコマンドを使わないでください。"
